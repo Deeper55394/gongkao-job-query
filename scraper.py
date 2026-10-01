@@ -49,7 +49,7 @@ import zipfile
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import Dict, Iterable, List, Optional, Sequence, Tuple
-from urllib.parse import urljoin, urlparse
+from urllib.parse import unquote, urljoin, urlparse
 from urllib.robotparser import RobotFileParser
 
 # --------------------------------------------------------------------------- #
@@ -545,6 +545,7 @@ class Attachment:
     source_name: str
     exam_type: str
     year: Optional[int]
+    kind: str = "jobs"     # jobs=职位表 | phone=招录单位咨询电话表
 
 
 @dataclass
@@ -621,6 +622,27 @@ def is_excel_attachment(url: str, title: str, page_title: str = "") -> bool:
     return any(k in context for k in ATTACH_KEYWORDS) or low.endswith(EXCEL_EXT)
 
 
+def is_phone_attachment(url: str, title: str, page_title: str = "") -> bool:
+    """
+    是否是"招录单位咨询电话"附件（zip / docx / xls 都算）。
+
+    实测江苏把它打包成 zip 放在专题页，里面是 13 市 + 省直 + 垂管系统的 Word 电话表；
+    文件名形如「江苏省2026年度考试录用公务员招录机关（单位）电话.zip」。
+    这类附件不产生职位，只用于给职位回填咨询电话。
+    """
+    low = url.lower().split("?")[0]
+    is_file = (low.endswith(EXCEL_EXT + ARCHIVE_EXT + (".docx", ".doc"))
+               or bool(re.search(r"\.(xlsx?|zip|rar|docx?)(\b|$)", url, re.I)))
+    if not is_file:
+        return False
+    context = " ".join([title, page_title, url])
+    if "电话" not in context:
+        return False
+    if any(bad in context for bad in ATTACH_BLOCKLIST):
+        return False
+    return any(good in context for good in ATTACH_REQUIRE)
+
+
 def discover_attachments(sess: PoliteSession, src: Source, max_pages: int = 40,
                          deadline: Optional[float] = None) -> DiscoverStats:
     """
@@ -655,13 +677,22 @@ def discover_attachments(sess: PoliteSession, src: Source, max_pages: int = 40,
 
         page_title = extract_page_title(html)
         for abs_url, title in extract_links(html, url):
-            # 1) 直接命中 Excel / zip 附件（用锚文本 + 页面标题 + URL 一起判断）
+            # 1) 招录单位咨询电话表（不产生职位，用于回填电话）
+            if is_phone_attachment(abs_url, title, page_title):
+                year = guess_year(title, abs_url, url, page_title)
+                stats.attachments.append(Attachment(
+                    url=abs_url, title=title or os.path.basename(abs_url),
+                    page_url=url, source_name=src.name,
+                    exam_type=src.exam_type, year=year or src.year, kind="phone",
+                ))
+                continue
+            # 2) 直接命中职位表附件（用锚文本 + 页面标题 + URL 一起判断）
             if is_excel_attachment(abs_url, title, page_title):
                 year = guess_year(title, abs_url, url, page_title)
                 stats.attachments.append(Attachment(
                     url=abs_url, title=title or os.path.basename(abs_url),
                     page_url=url, source_name=src.name,
-                    exam_type=src.exam_type, year=year or src.year,
+                    exam_type=src.exam_type, year=year or src.year, kind="jobs",
                 ))
                 continue
             # 记录被过滤掉的 Excel 附件（便于人工确认过滤是否过严）
@@ -675,10 +706,10 @@ def discover_attachments(sess: PoliteSession, src: Source, max_pages: int = 40,
                     queue.append((abs_url, depth + 1))
         time.sleep(0.5)   # 每个页面之间再喘口气
 
-    # 去重（同一附件可能被多个页面链接）
+    # 去重（同一附件可能被多个页面/多个协议链接）。键必须带上 filename= 参数，见 attachment_key()
     seen, uniq = set(), []
     for a in stats.attachments:
-        key = a.url.split("?")[0].lower()
+        key = attachment_key(a.url)
         if key not in seen:
             seen.add(key)
             uniq.append(a)
@@ -686,21 +717,45 @@ def discover_attachments(sess: PoliteSession, src: Source, max_pages: int = 40,
     return stats
 
 
+def attachment_key(url: str) -> str:
+    """
+    附件去重键。
+
+    ⚠ 踩过的坑：不能简单用 url.split("?")[0] —— 政府站大量附件都是
+    `module/download/downfile.jsp?classid=0&filename=xxx.zip` 这种形式，
+    去掉查询串后**所有附件的键都相同**，后发现的会被当成重复项丢掉。
+    江苏省考"各地职位表.zip"（13 个设区市、约 5800 个职位）就是这样被
+    "招录机关电话.zip"挤掉的，导致自动抓取只拿到省直+垂管的 338 条。
+    这里优先用 filename= 参数做键，并把 http/https 视为同一文件。
+    """
+    p = urlparse(url)
+    m = re.search(r"filename=([^&]+)", p.query)
+    if m:
+        return "file:" + unquote(m.group(1)).lower()
+    return (p.netloc + p.path).lower()
+
+
 # =========================================================================== #
 #                        三、下载与解压
 # =========================================================================== #
 
+PHONE_EXT = (".docx", ".doc", ".pdf")
+
+
 def safe_filename(url: str, title: str) -> str:
-    base = os.path.basename(urlparse(url).path) or "attachment"
-    base = re.sub(r"[\\/:*?\"<>|\s]+", "_", base)[:80]
-    if not base.lower().endswith(EXCEL_EXT + ARCHIVE_EXT):
-        base = re.sub(r"\.(jsp|do|action)$", "", base, flags=re.I) + ".xlsx"
-    digest = hashlib.md5(url.encode("utf-8")).hexdigest()[:8]
-    name = "%s_%s" % (digest, base)
+    """
+    生成安全的本地文件名。政府站的下载链接常是 downfile.jsp?classid=0&filename=xxx.zip，
+    必须优先取 filename= 参数里的真实文件名（否则扩展名判断会全错，.zip/.docx 会被当成 .xlsx）。
+    """
+    query = urlparse(url).query
+    m = re.search(r"filename=([^&]+)", query)
+    raw = unquote(m.group(1)) if m else (os.path.basename(urlparse(url).path) or "attachment")
+    base = re.sub(r"[\\/:*?\"<>|\s]+", "_", raw)[:80] or "attachment"
     ext = os.path.splitext(base)[1].lower()
-    if ext not in EXCEL_EXT + ARCHIVE_EXT:
-        name += ".xlsx"
-    return name
+    if ext not in EXCEL_EXT + ARCHIVE_EXT + PHONE_EXT:
+        base = re.sub(r"\.(jsp|do|action|html?)$", "", base, flags=re.I) + ".xlsx"
+    digest = hashlib.md5(url.encode("utf-8")).hexdigest()[:8]
+    return "%s_%s" % (digest, base)
 
 
 def download_attachment(sess: PoliteSession, att: Attachment, out_dir: str) -> List[str]:
@@ -728,6 +783,33 @@ def download_attachment(sess: PoliteSession, att: Attachment, out_dir: str) -> L
         log.warning("  .rar/.7z 需外部工具解压，已跳过：%s（请在本地解压后用 --local 传入）", path)
         return []
     return []
+
+
+def download_and_parse_phone(sess: PoliteSession, att: Attachment) -> List[Tuple[str, str, str]]:
+    """
+    下载"招录单位咨询电话"附件并解析成 [(地区, 单位, 电话)]。
+    支持：zip（内含 docx/xls）· docx · xls/xlsx；旧版 .doc 需人工另存为 .docx。
+    """
+    os.makedirs(DOWNLOAD_DIR, exist_ok=True)
+    path = os.path.join(DOWNLOAD_DIR, safe_filename(att.url, att.title))
+    if not (os.path.exists(path) and os.path.getsize(path) > 0):
+        content = sess.get_bytes(att.url)
+        if not content:
+            return []
+        if len(content) < 512:
+            log.warning("  电话附件过小（%d 字节），跳过：%s", len(content), att.url)
+            return []
+        with open(path, "wb") as fh:
+            fh.write(content)
+
+    entries: List[Tuple[str, str, str]] = []
+    low = path.lower()
+    if low.endswith((".zip", ".rar", ".7z")):
+        for doc in extract_docs_from_archive(path):
+            entries.extend(parse_phone_table(doc))
+    else:
+        entries.extend(parse_phone_table(path))
+    return entries
 
 
 def unzip_excel(zip_path: str, out_dir: str) -> List[str]:
@@ -1639,6 +1721,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             log.info("本次抓取总时间预算：%d 秒（到点就停，避免撞上任务超时）", args.time_budget)
 
         skipped_sources: List[str] = []
+        collected: List[Attachment] = []          # 所有数据源发现的附件，最后统一分两批处理
         for src in SOURCES:
             if deadline and time.time() > deadline:
                 skipped_sources.append(src.name)
@@ -1664,8 +1747,27 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 sources_meta.append({"source_name": src.name, "pages": stat.pages_visited,
                                      "attachments": len(stat.attachments)})
                 continue
+            collected.extend(stat.attachments)
 
-            for att in stat.attachments:
+        # 两批处理：先电话表（建立索引），再职位表（用索引回填咨询电话）
+        # 顺序很重要——否则职位表先解析时还没有电话可填。
+        regions = load_region_map()
+        phone_entries: List[Tuple[str, str, str]] = []
+        for att in [a for a in collected if a.kind == "phone"]:
+            try:
+                got = download_and_parse_phone(sess, att)
+            except Exception as exc:
+                warnings.append("电话表下载/解析失败 %s：%s" % (att.url, exc))
+                continue
+            if got:
+                log.info("  [电话] %s -> %d 条", att.title[:40], len(got))
+            phone_entries.extend(got)
+        phone_index = build_phone_index(phone_entries, regions) if phone_entries else {}
+        if phone_entries:
+            log.info("  咨询电话索引：%d 条电话记录 -> %d 个键", len(phone_entries), len(phone_index))
+
+        if not args.check_only:
+            for att in [a for a in collected if a.kind != "phone"]:
                 try:
                     files = download_attachment(sess, att, DOWNLOAD_DIR)
                 except Exception as exc:
@@ -1677,7 +1779,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                         jobs = rows_to_jobs(
                             df, exam_type=att.exam_type, year=att.year,
                             source_url=att.page_url, source_name=att.source_name,
-                            source_file=os.path.basename(file_path), scraped_at=scraped_at)
+                            source_file=os.path.basename(file_path), scraped_at=scraped_at,
+                            phone_index=phone_index, regions=regions)
                     except Exception as exc:
                         warnings.append("解析失败 %s：%s" % (os.path.basename(file_path), exc))
                         log.warning("  解析失败 %s：%s", file_path, exc)
