@@ -158,16 +158,22 @@ SOURCES: List[Source] = [
         depth=2,
     ),
     Source(
-        name="江苏省人力资源和社会保障厅·人事考试/招录公告",
+        name="江苏省人力资源和社会保障厅·公务员招录（岗位信息/省考专题）",
         exam_type="江苏省考",
         year=None,
+        # 实测（2026-10）：江苏省考职位表在「岗位信息」栏目 col92919 的 3 篇文章页里
+        #   · 省级机关职位表.xls      · 各地职位表.zip（13 市）      · 垂管单位职位表（统计/监狱戒毒）
+        # 专题栏目 id 每轮会变，所以同时把"更多专题"列表页作为入口，靠关键词跟到新专题
         entry_pages=[
+            "http://jshrss.jiangsu.gov.cn/col/col92919/index.html",   # 岗位信息（职位表所在栏目）
+            "http://jshrss.jiangsu.gov.cn/col/col92911/index.html",   # 本轮省考专题
+            "http://jshrss.jiangsu.gov.cn/col/col79436/index.html",   # 专题专栏列表（找下一轮专题）
+            "http://jshrss.jiangsu.gov.cn/col/col57253/index.html",   # 江苏人事考试网
             "https://jshrss.jiangsu.gov.cn/",
-            "https://jshrss.jiangsu.gov.cn/col/col57253/index.html",  # 通知公告
         ],
-        link_keywords=["公务员", "考试录用", "公告", "职位表", "招录"],
+        link_keywords=["公务员", "考试录用", "公告", "职位表", "招录", "岗位信息", "专题"],
         allowed_hosts=["jshrss.jiangsu.gov.cn"],
-        depth=2,
+        depth=3,
     ),
     # ---------------- 各设区市（市级岗位发布渠道） ----------------
     Source(
@@ -301,7 +307,9 @@ COLUMN_ALIASES: Dict[str, List[str]] = {
     "用人司局/单位":  ["用人司局", "用人单位", "内设机构", "招考单位", "处室", "科室", "部门"],
     "职位名称":       ["招考职位", "职位名称", "岗位名称", "招聘岗位", "招考岗位", "职位"],
     "招录人数":       ["招考人数", "招录人数", "计划录用人数", "招聘人数", "计划数", "人数"],
-    "工作地点":       ["工作地点", "工作地", "工作所在地", "职位分布", "所属地区", "地区", "单位地址"],
+    # 注意顺序：江苏省考表里同时有「地区代码」和「地区名称」，必须让"地区名称"先命中，
+    # 否则工作地点会变成 6 位数字的地区代码（已踩过）
+    "工作地点":       ["工作地点", "工作地", "工作所在地", "职位分布", "地区名称", "所属地区", "地区", "单位地址"],
     "学历要求":       ["学历要求", "学历", "学历条件"],
     "学位要求":       ["学位要求", "学位"],
     "专业要求原文":   ["专业", "专业要求", "所学专业", "专业条件", "专业类别"],
@@ -309,7 +317,7 @@ COLUMN_ALIASES: Dict[str, List[str]] = {
     "基层工作最低年限": ["基层工作最低年限", "基层工作经历", "基层年限", "工作经历", "是否要求基层工作经历"],
     "身份要求":       ["身份要求", "招考对象", "报考身份", "考生身份", "面向对象", "招聘对象"],
     "户籍/生源要求":  ["户籍要求", "户籍", "生源", "户籍或生源地", "生源地要求"],
-    "其他条件":       ["其他条件", "其他", "其他要求", "报考条件"],
+    "其他条件":       ["其他条件", "其他", "其它", "其它条件", "其他要求", "报考条件"],
     "考试类别":       ["考试类别", "考试科目", "职位类别", "试卷类别", "专业考试科目"],
     "面试比例":       ["面试人员比例", "面试比例", "面试人选比例", "开考比例"],
     "备注":           ["备注", "其他说明"],
@@ -751,11 +759,43 @@ def unzip_excel(zip_path: str, out_dir: str) -> List[str]:
 #                   四、Excel 解析与字段归一化
 # =========================================================================== #
 
+def _norm_header(v) -> str:
+    """表头归一化：去掉空白（含全角空格）便于匹配"""
+    return re.sub(r"[\s\u3000]+", "", clean_text(v))
+
+
+def find_header_row(raw: "pd.DataFrame", max_scan: int = 12) -> Optional[int]:
+    """
+    在"未设表头"的工作表里找出真正的表头行。
+
+    为什么需要：官方职位表第一行常常是**合并的大标题**（如"2026年度盐城市考录职位简介表"），
+    有时前面还有一个空行，直接 header=0 会把标题当表头，导致所有列名变成 Unnamed。
+    做法：逐行打分——命中已知表头别名的单元格越多分越高，取最高分且 >=3 分的行。
+    """
+    all_aliases = [a for alist in COLUMN_ALIASES.values() for a in alist if a]
+    best_idx, best_score = None, 0
+    for i in range(min(max_scan, len(raw))):
+        score = 0
+        for cell in raw.iloc[i].tolist():
+            c = _norm_header(cell)
+            if not c or c.lower() == "nan":
+                continue
+            if c in all_aliases:
+                score += 2
+            elif any(a in c for a in all_aliases if len(a) >= 2):
+                score += 1
+        if score > best_score:
+            best_idx, best_score = i, score
+    return best_idx if best_score >= 3 else None
+
+
 def read_excel_all_sheets(path: str) -> "pd.DataFrame":
     """
     读取 Excel 的全部 sheet 并纵向合并。
+
     国考职位表通常 4 个 sheet（中央党群/国家行政机关直属机构/参照公务员法管理事业单位/…），
-    江苏省考职位表常按地市分 sheet，都必须合并。
+    江苏省考职位表按地市分 sheet，都必须合并。
+    表头行通过 find_header_row 自动识别（真实表里第一行往往是合并标题，甚至先有一个空行）。
     """
     ext = os.path.splitext(path)[1].lower()
     engines: List[Optional[str]]
@@ -767,16 +807,32 @@ def read_excel_all_sheets(path: str) -> "pd.DataFrame":
     last_err: Optional[Exception] = None
     for engine in engines:
         try:
-            sheets = pd.read_excel(path, sheet_name=None, dtype=str, engine=engine)
+            sheets = pd.read_excel(path, sheet_name=None, dtype=str, header=None, engine=engine)
             frames = []
-            for name, df in sheets.items():
-                if df is None or df.empty:
+            for name, raw in sheets.items():
+                if raw is None or raw.empty:
                     continue
-                df = df.dropna(how="all").dropna(axis=1, how="all")
-                if df.empty or df.shape[1] < 2:
+                raw = raw.dropna(how="all").dropna(axis=1, how="all")
+                if raw.empty or raw.shape[1] < 2:
                     continue
-                df["_sheet"] = name
-                frames.append(df)
+                hidx = find_header_row(raw)
+                if hidx is None:
+                    log.warning("  工作表「%s」未识别到表头行，已跳过（可用 --verbose 查看前几行）", name)
+                    continue
+                header = [clean_text(x) for x in raw.iloc[hidx].tolist()]
+                body = raw.iloc[hidx + 1:].copy()
+                body.columns = header
+                # 去掉与表头重复的行（多 sheet 合并后常见）与全空行
+                body = body[~body.apply(
+                    lambda r: all(_norm_header(v) == _norm_header(h) for v, h in zip(r.tolist(), header)),
+                    axis=1)]
+                body = body.dropna(how="all")
+                # 去掉重名列，避免 pandas 取列时返回 DataFrame（历史 bug）
+                body = body.loc[:, ~body.columns.duplicated()]
+                body["_sheet"] = name
+                log.debug("  工作表「%s」表头行=%d，数据 %d 行，列=%s",
+                          name, hidx, len(body), list(body.columns)[:14])
+                frames.append(body)
             if frames:
                 return pd.concat(frames, ignore_index=True, sort=False)
         except Exception as exc:      # 换下一个引擎再试
@@ -842,7 +898,7 @@ def clean_text(v) -> str:
 
 # ------------------------------ 专业匹配 ------------------------------ #
 
-RE_NO_LIMIT = re.compile(r"不限专业|专业不限|不作专业限制|无专业限制|专业无限制")
+RE_NO_LIMIT = re.compile(r"不限专业|专业不限|不作专业限制|无专业限制|专业无限制|^不限$|^专业?不限$|^无限制$")
 RE_BIO_SCI_EXACT = re.compile(r"生物科学(?!类)")          # "生物科学"但排除"生物科学类"
 RE_BIO_SCI_CLASS = re.compile(r"生物科学类")
 RE_BASIC_SCIENCE = re.compile(r"基础理学类|理学类")
@@ -898,6 +954,80 @@ def derive_identity(row_text: str) -> str:
     if RE_WANGSHOU.search(t):
         return "往届"
     return "不限"
+
+
+# ---- 江苏省考职位表没有"政治面貌/基层年限/户籍"列，要求都写在「其它」里，这里补出来 ----
+
+def derive_political(current: str, remark: str) -> str:
+    if current and current != "不限":
+        return current
+    if re.search(r"政治面貌不限|不限政治面貌", remark):
+        return "不限"
+    tags = []
+    if re.search(r"中共党员|党员", remark):
+        tags.append("中共党员")
+    if re.search(r"共青团员|团员", remark):
+        tags.append("共青团员")
+    if re.search(r"群众", remark):
+        tags.append("群众")
+    return "或".join(tags) if tags else (current or "不限")
+
+
+_YEAR_TEXT = {"一": "满1年", "1": "满1年", "两": "满2年", "二": "满2年", "2": "满2年",
+              "三": "满3年", "3": "满3年"}
+
+
+def derive_experience(current: str, remark: str) -> str:
+    if current and current not in ("无", "不限", ""):
+        return current
+    m = (re.search(r"(一|1|两|二|2|三|3)\s*年(?:以上)?(?:的)?基层工作经历", remark)
+         or re.search(r"基层工作经历[^，,；;。]{0,12}?(一|1|两|二|2|三|3)\s*年", remark))
+    if m:
+        return _YEAR_TEXT.get(m.group(1), "无")
+    if "基层工作经历" in remark:
+        return "有要求（详见其他条件）"
+    return current or "无"
+
+
+def derive_hukou(current: str, remark: str) -> str:
+    if current:
+        return current
+    m = re.search(r"[^，,；;。]{0,24}(?:户籍|生源)[^，,；;。]{0,24}", remark)
+    return m.group(0).strip() if m else "不限"
+
+
+# 江苏省考用"职位代码"的后两位表示招录对象，这是判断"能不能报"的关键信息：
+#   60-69 面向应届毕业生 | 70-79 法官/检察官助理 | 80-81 面向残疾人
+#   90-96 面向服务基层项目人员 | 98 面向优秀村（社区）书记主任
+TARGETED_CODES = {
+    "70": "法官助理", "71": "法官助理", "72": "法官助理", "73": "法官助理", "74": "法官助理",
+    "75": "检察官助理", "76": "检察官助理", "77": "检察官助理", "78": "检察官助理", "79": "检察官助理",
+    "80": "面向残疾人", "81": "面向残疾人",
+    "90": "服务基层项目人员", "91": "服务基层项目人员", "92": "服务基层项目人员",
+    "93": "服务基层项目人员", "94": "服务基层项目人员", "95": "服务基层项目人员",
+    "96": "服务基层项目人员", "98": "优秀村（社区）书记主任",
+}
+
+
+def identity_by_code(code: str, current: str) -> str:
+    """用职位代码后两位判断招录对象（江苏省考特有），国考的 12 位代码不会命中"""
+    c = clean_text(code)
+    if not c.isdigit() or len(c) > 3:
+        return current
+    tail = c.zfill(2)
+    if tail in TARGETED_CODES:
+        return "定向岗位·" + TARGETED_CODES[tail]
+    if "60" <= tail <= "69":
+        return "应届"
+    return current
+
+
+def is_targeted(job: Dict[str, object]) -> bool:
+    """是否属于"定向招录"（本科应届一般报不了，默认排除）"""
+    if "定向岗位" in clean_text(job.get("身份要求")):
+        return True
+    tail = clean_text(job.get("职位代码")).zfill(2)
+    return tail in TARGETED_CODES
 
 
 def derive_exam_year(exam_type: str, year: Optional[int], title: str = "") -> int:
@@ -1002,6 +1132,8 @@ def rows_to_jobs(df: "pd.DataFrame", *, exam_type: str, year: Optional[int],
         identity = g("身份要求") or derive_identity(remark + " " + title)
         if re.search(r"不限", g("身份要求")):
             identity = "不限"
+        # 江苏省考：用职位代码后两位校正招录对象（定向岗位/应届）
+        identity = identity_by_code(g("职位代码"), identity)
 
         job: Dict[str, object] = {
             "考试类型": exam_type,
@@ -1016,10 +1148,10 @@ def rows_to_jobs(df: "pd.DataFrame", *, exam_type: str, year: Optional[int],
             "学位要求": g("学位要求"),
             "专业要求原文": major_text,
             "专业目录归属": tag_majors(major_text),
-            "政治面貌": g("政治面貌") or "不限",
-            "基层工作最低年限": g("基层工作最低年限") or g("服务基层项目工作经历") or "无",
+            "政治面貌": derive_political(g("政治面貌"), remark),
+            "基层工作最低年限": derive_experience(g("基层工作最低年限") or g("服务基层项目工作经历"), remark),
             "身份要求": identity,
-            "户籍/生源要求": g("户籍/生源要求") or "不限",
+            "户籍/生源要求": derive_hukou(g("户籍/生源要求"), remark),
             "其他条件": g("其他条件"),
             "考试类别": g("考试类别"),
             "面试比例": g("面试比例"),
@@ -1080,12 +1212,56 @@ def load_existing(path: str) -> Tuple[Dict[str, dict], Dict[str, object]]:
 
 
 def job_key(job: Dict[str, object]) -> str:
-    """职位唯一键：考试类型 + 年度 + 职位代码；无代码时退回 机关+名称+专业"""
+    """
+    职位唯一键。
+    注意：**国考的职位代码是全局唯一的**（如 300110001001），但**江苏省考是"市内 2 位编号"**
+    （如"60"），不同单位会重复，必须叠加招录机关，否则会把上千个职位挤成几十个。
+    """
     code = clean_text(job.get("职位代码"))
+    org = clean_text(job.get("招录机关")) or clean_text(job.get("用人司局/单位"))
+    # 城市必须进键：像"市场监督管理局""街道办事处"这类名称各市都有，光靠 机关+代码 会撞车
+    place = clean_text(job.get("工作地点"))
     if code:
-        return "|".join([clean_text(job.get("考试类型")), clean_text(job.get("年度")), code])
-    return "|".join([clean_text(job.get("招录机关")), clean_text(job.get("职位名称")),
+        return "|".join([clean_text(job.get("考试类型")), clean_text(job.get("年度")),
+                         place, org, code])
+    return "|".join([place, org, clean_text(job.get("职位名称")),
                      clean_text(job.get("专业要求原文"))[:40]])
+
+
+def apply_year_policy(jobs: List[Dict[str, object]], policy: str = "latest"
+                      ) -> Tuple[List[Dict[str, object]], Dict[str, int], List[int]]:
+    """
+    年度策略：latest = 每种考试类型只保留**最新年度**的记录。
+
+    这就是"有新表就替换旧表"：2027 年度的职位表一旦被官方发布并抓到，
+    2026 年度的旧记录会被自动丢弃（可用 --year-policy keep-all 保留历年做对比）。
+    返回 (保留的记录, 各考试类型的最新年度, 被丢弃的年度列表)
+    """
+    newest: Dict[str, int] = {}
+    for j in jobs:
+        et = clean_text(j.get("考试类型")) or "未知"
+        try:
+            y = int(clean_text(j.get("年度")) or 0)
+        except ValueError:
+            y = 0
+        if y > newest.get(et, 0):
+            newest[et] = y
+    if policy != "latest":
+        return jobs, newest, []
+
+    kept: List[Dict[str, object]] = []
+    dropped_years: set = set()
+    for j in jobs:
+        et = clean_text(j.get("考试类型")) or "未知"
+        try:
+            y = int(clean_text(j.get("年度")) or 0)
+        except ValueError:
+            y = 0
+        if y >= newest.get(et, 0):
+            kept.append(j)
+        else:
+            dropped_years.add(y)
+    return kept, newest, sorted(dropped_years)
 
 
 def merge_jobs(existing: Dict[str, dict], fresh: List[Dict[str, object]]) -> Tuple[List[Dict[str, object]], int, int]:
@@ -1138,6 +1314,10 @@ def build_argparser() -> argparse.ArgumentParser:
     p.add_argument("--data-status", choices=["auto", "official", "local-import", "sample"],
                    default="auto", help="写入 meta.data_status 的数据状态标记；sample 会在每条记录上标注「是否示例=true」")
     p.add_argument("--no-merge", action="store_true", help="不合并历史数据，直接用本次抓取结果覆盖")
+    p.add_argument("--include-targeted", action="store_true",
+                   help="保留定向招录岗位（面向服务基层项目人员/优秀村书记/残疾人/法官检察官助理）；默认排除")
+    p.add_argument("--year-policy", choices=["latest", "keep-all"], default="latest",
+                   help="latest=每类考试只保留最新年度（实现「有新表就替换旧表」，默认）；keep-all=保留历年")
     p.add_argument("--check-only", action="store_true", help="只检查是否存在新的职位表附件，不下载")
     p.add_argument("--dry-run", action="store_true", help="解析但不写入 data.json")
     p.add_argument("--selftest", action="store_true", help="离线自检解析与匹配逻辑，不联网")
@@ -1325,6 +1505,17 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         fresh = [j for j in fresh if is_jiangsu(j) and is_relevant_biology(j)]
         log.info("范围收窄（江苏 + 生物相关）：%d -> %d 条", before, len(fresh))
 
+    # 定向招录岗位（面向服务基层项目人员/优秀村书记/残疾人/法官检察官助理）默认排除：
+    # 这类岗位本科应届一般报不了，留着会把"不限专业"结果淹没
+    if not args.include_targeted:
+        before = len(fresh)
+        fresh = [j for j in fresh if not is_targeted(j)]
+        excluded = before - len(fresh)
+        if excluded:
+            log.info("已排除 %d 个定向招录岗位（如面向服务基层项目人员/优秀村书记/残疾人）；"
+                     "如需保留请加 --include-targeted", excluded)
+            warnings.append("已排除 %d 个定向招录岗位（本科应届一般不符合报考对象），如需查看请加 --include-targeted" % excluded)
+
     # 同一批次内去重
     dedup: Dict[str, Dict[str, object]] = {}
     for j in fresh:
@@ -1333,6 +1524,19 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
 
     existing, old_meta = ({}, {}) if args.no_merge else load_existing(args.output)
     merged, added, updated = merge_jobs(existing, fresh)
+
+    # 年度策略：默认只保留每类考试的最新年度 —— 官方发布新年度职位表后，
+    # 旧年度记录会被自动替换掉（这就是"有新表就替换旧表"）
+    merged, cycle_years, dropped_years = apply_year_policy(merged, args.year_policy)
+    if dropped_years:
+        log.info("年度策略（%s）：仅保留最新年度 %s，已丢弃旧年度 %s 的记录；"
+                 "如需保留历年请加 --year-policy keep-all",
+                 args.year_policy,
+                 "、".join("%s %d" % (k, v) for k, v in cycle_years.items()),
+                 "、".join(str(y) for y in dropped_years))
+        warnings.append("已按年度策略仅保留最新年度记录（丢弃 %s）；如需保留历年请加 --year-policy keep-all"
+                        % "、".join(str(y) for y in dropped_years))
+
     merged.sort(key=lambda j: (clean_text(j.get("考试类型")), clean_text(j.get("年度")),
                                clean_text(j.get("招录机关"))), reverse=True)
 

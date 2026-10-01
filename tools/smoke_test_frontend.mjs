@@ -18,7 +18,9 @@ import { createRequire } from 'node:module';
 const require = createRequire(import.meta.url);
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const html = fs.readFileSync(path.join(ROOT, 'index.html'), 'utf8');
-const dataJson = fs.readFileSync(path.join(ROOT, 'data.json'), 'utf8');
+// 用固定夹具测试前端逻辑：不依赖 data.json 里的真实数据，
+// 否则每次更新数据（例如换成江苏省考官方表）这些断言都会红。
+const dataJson = fs.readFileSync(path.join(ROOT, 'samples', '示例_data.json'), 'utf8');
 
 /* ---------------- 抽出内联脚本 & 内置数据 ---------------- */
 // 注意：必须排除 <script id="embedded-data" type="application/json">（那是数据不是代码）
@@ -151,13 +153,17 @@ console.log('\n—— 阶段 2：读不到 data.json，自动退回页面内置�
   const { api, els } = await runPhase(failFetch, { withEmbedded: true });
   const { state, classify } = api;
 
-  check('内置数据可解析且记录数一致', state.jobs.length, JSON.parse(dataJson).jobs.length);
-  check('内置数据来源标注', state.meta.data_status, 'sample');
+  // 注意：index.html 里内嵌的是当前真实数据（不再等于夹具），所以这里做"自洽校验"，
+  // 不写死记录数——只要内嵌数据能被正确加载、分类并筛选出结果即可。
+  const embedded = JSON.parse(embeddedRaw);
+  check('内置数据可解析且记录数与内嵌一致', state.jobs.length, embedded.jobs.length);
   check('加载状态降级为 warn（而非报错）', els.get('loadState').className, 'warn');
   check('提示文案提到「内置数据」', /内置数据/.test(els.get('loadState').innerHTML), true);
   const d = { A: 0, B: 0, C: 0, D: 0 };
   state.filtered.forEach(j => { d[classify(j).level]++; });
-  check('内置数据默认筛选分布一致', d, { A: 4, B: 1, C: 2, D: 0 });
+  check('内置数据全部记录都能给出 A/B/C/D 结论',
+    Object.values(d).reduce((a, b) => a + b, 0), state.filtered.length);
+  check('内置数据不是空的', state.jobs.length > 0, true);
 }
 
 /* ============ 阶段 3：浏览器内直接上传官方 Excel（完全不需要 Python） ============ */
