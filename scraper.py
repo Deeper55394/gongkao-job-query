@@ -535,6 +535,7 @@ class DiscoverStats:
     attachments: List[Attachment] = field(default_factory=list)
     errors: List[str] = field(default_factory=list)
     filtered: int = 0        # 命中"是 Excel 但不是公务员职位表"（如事业单位岗位表）而过滤掉的数量
+    timeout_hit: bool = False  # 是否因时间预算用完而提前停止
 
 
 def guess_year(*texts: str) -> Optional[int]:
@@ -602,16 +603,24 @@ def is_excel_attachment(url: str, title: str, page_title: str = "") -> bool:
     return any(k in context for k in ATTACH_KEYWORDS) or low.endswith(EXCEL_EXT)
 
 
-def discover_attachments(sess: PoliteSession, src: Source, max_pages: int = 40) -> DiscoverStats:
+def discover_attachments(sess: PoliteSession, src: Source, max_pages: int = 40,
+                         deadline: Optional[float] = None) -> DiscoverStats:
     """
     两级跟进：入口页 -> （含"职位表/招录公告"的公告页）-> 附件
     对每个数据源独立 try/except，单个源失败不影响其他源。
+
+    deadline：绝对时间戳（time.time() 口径）。超过就停止继续翻页——
+    境外网络访问国内政府站点常常是"连接挂起 30 秒"，没有预算控制会一直跑到任务超时。
     """
     stats = DiscoverStats()
     queue: List[Tuple[str, int]] = [(u, 1) for u in src.entry_pages]
     visited: set = set()
 
     while queue and stats.pages_visited < max_pages:
+        if deadline and time.time() > deadline:
+            log.warning("  已用完本次抓取时间预算，停止继续翻页：%s", src.name)
+            stats.timeout_hit = True
+            break
         url, depth = queue.pop(0)
         if url in visited:
             continue
@@ -1112,6 +1121,8 @@ def build_argparser() -> argparse.ArgumentParser:
     p.add_argument("--strict-tls", action="store_true",
                    help="严格校验 HTTPS 证书；默认遇到证书链异常的政府站点会降级重试并记录日志")
     p.add_argument("--max-pages", type=int, default=40, help="每个数据源最多访问的页面数（默认 40）")
+    p.add_argument("--time-budget", type=int, default=900,
+                   help="本次抓取的总时间预算（秒，默认 900=15 分钟）；到点停止翻页，避免撞上 CI 任务超时")
     p.add_argument("--scope", choices=["jiangsu-biology", "all"], default="jiangsu-biology",
                    help="收录范围：jiangsu-biology=江苏且与生物科学相关（默认）；all=全部")
     p.add_argument("--data-status", choices=["auto", "official", "local-import", "sample"],
@@ -1171,6 +1182,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
 
     started = datetime.now(CST)
     scraped_at = started.isoformat(timespec="seconds")
+    # --check-only 与 --dry-run 都不允许写任何文件
+    # （踩过的坑：--check-only 也会顺手更新 data.json 的 meta，导致本地与机器人提交冲突）
+    no_write = bool(args.dry_run or args.check_only)
     fresh: List[Dict[str, object]] = []
     warnings: List[str] = []
     sources_meta: List[Dict[str, object]] = []
@@ -1222,10 +1236,19 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         if not HAS_REQUESTS:
             log.warning("未安装 requests，已退回标准库 urllib（建议 pip install requests）")
 
+        # 总时间预算：境外网络访问国内政府站点常是"连接挂起"，必须有个总闸
+        deadline = (time.time() + args.time_budget) if args.time_budget and args.time_budget > 0 else None
+        if deadline:
+            log.info("本次抓取总时间预算：%d 秒（到点就停，避免撞上任务超时）", args.time_budget)
+
+        skipped_sources: List[str] = []
         for src in SOURCES:
+            if deadline and time.time() > deadline:
+                skipped_sources.append(src.name)
+                continue
             log.info("═══ 数据源：%s ═══", src.name)
             try:
-                stat = discover_attachments(sess, src, max_pages=args.max_pages)
+                stat = discover_attachments(sess, src, max_pages=args.max_pages, deadline=deadline)
             except Exception as exc:
                 warnings.append("%s 抓取异常：%s" % (src.name, exc))
                 log.warning("  抓取异常：%s", exc)
@@ -1275,6 +1298,12 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                         "fetched_at": scraped_at,
                     })
 
+        if skipped_sources:
+            warnings.append("时间预算 %d 秒用尽，本次跳过 %d 个数据源（%s）"
+                            % (args.time_budget, len(skipped_sources),
+                               "、".join(skipped_sources[:3]) + ("…" if len(skipped_sources) > 3 else "")))
+            log.warning("时间预算用尽，跳过剩余 %d 个数据源", len(skipped_sources))
+
         if sess.skipped:
             warnings.append("遵守 robots.txt 跳过 %d 个链接" % len(sess.skipped))
 
@@ -1311,7 +1340,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         print("=" * 72 + "\n")
         if not existing:
             warnings.append("首次运行未获取到数据，未生成 data.json（不编造数据）")
-            if not args.dry_run:
+            if not no_write:
                 log.error("不写入任何文件（绝不编造职位数据）。")
             return 2
         # 有历史数据：只更新 meta 中的告警信息，不动 jobs
@@ -1319,7 +1348,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         old_meta["warnings"] = (old_meta.get("warnings") or [])[:0] + warnings + \
             ["本次(%s)定时抓取未发现新职位表，数据保持为上一次抓取结果" % started.strftime("%Y-%m-%d %H:%M")]
         old_meta["last_check"] = scraped_at
-        if not args.dry_run:
+        if not no_write:
             write_data_json(args.output, merged, old_meta)
         return 2
 
@@ -1346,8 +1375,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         "disclaimer": "数据来自官方公开职位表，仅供筛选参考；报考条件以官方公告、职位表原件及招录单位答复为准。",
     }
 
-    if args.dry_run:
-        log.info("--dry-run：解析到 %d 条（合并后 %d 条），未写入文件", len(fresh), len(merged))
+    if no_write:
+        log.info("%s：解析到 %d 条（合并后 %d 条），未写入文件",
+                 "--check-only" if args.check_only else "--dry-run", len(fresh), len(merged))
     else:
         write_data_json(args.output, merged, meta)
         log.info("已写入 %s：共 %d 条（新增 %d，更新 %d）", args.output, len(merged), added, updated)

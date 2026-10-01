@@ -118,11 +118,12 @@ jobs:
           set -uo pipefail
           DRY=""
           if [ "${{ github.event.inputs.dry_run }}" = "true" ]; then DRY="--dry-run"; fi
-          DELAY="${{ github.event.inputs.delay }}"; DELAY="${DELAY:-3}"
+          DELAY="${{ github.event.inputs.delay }}"; DELAY="${DELAY:-2}"
           SCOPE="${{ github.event.inputs.scope }}"; SCOPE="${SCOPE:-jiangsu-biology}"
 
           code=0
-          python scraper.py --delay "$DELAY" --scope "$SCOPE" $DRY || code=$?
+          # --time-budget：境外访问国内政府站点常表现为"连接挂起"，用它兜住总时长，避免整任务超时
+          python scraper.py --delay "$DELAY" --scope "$SCOPE" --time-budget 600 $DRY || code=$?
           echo "exit_code=$code" >> "$GITHUB_OUTPUT"
 
           if [ "$code" = "0" ]; then
