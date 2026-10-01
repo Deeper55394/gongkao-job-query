@@ -646,6 +646,84 @@ def is_phone_attachment(url: str, title: str, page_title: str = "") -> bool:
     return any(good in context for good in ATTACH_REQUIRE)
 
 
+def discover_guokao_api(sess: PoliteSession) -> Tuple[List[Attachment], Dict[str, str]]:
+    """
+    国考官方附件通道（**这是国考唯一可自动化的官方入口**）。
+
+    实测背景：国考专题站是纯 JS 应用（页面 2~4KB、0 链接），静态发现拿不到任何附件；
+    但它的常量脚本里写着真正的数据接口，据此可以拿到官方"相关下载"列表：
+
+        GET http://dl.scs.gov.cn/pp/gkweb/core/web/ui/js/core/core-constant.js
+            → neu.hb01Id="8a81f6d9..."（本年度专题 id）、neu.aae001="2026"（年度）、
+              neu.cdnServer="http://dl.scs.gov.cn"、neu.downloadServer=".../download/"
+        GET {cdnServer}/api/res/{hb01Id}/1110
+            → {"resList":[{"resourceName":"中央机关及其直属机构2026年度考试录用公务员招考简章.zip",
+                           "resResourceId":"8a81f6d1..."}]}
+        GET {downloadServer}{resResourceId}  → 官方原件（招考简章/职位表）
+
+    好处：年度 id 由官方脚本给出，**每年换专题时会自动跟着变**，不需要改代码。
+    返回 (附件列表, 元信息)
+    """
+    meta: Dict[str, str] = {}
+    js = sess.get_text(GUOKAO_API_JS)
+    if not js:
+        return [], meta
+
+    def pick(key: str) -> str:
+        m = re.search(key + r'\s*[:=]\s*"([^"]*)"', js)
+        return m.group(1) if m else ""
+
+    hb01 = pick("hb01Id")
+    if not hb01:
+        # 官方脚本里它是三元表达式：neu.hb01Id=neu.examSelect?"":"8a81f6d9..."（16+ 位十六进制）
+        m = re.search(r'hb01Id\s*[:=][^,;]*?"([0-9a-fA-F]{16,})"', js)
+        hb01 = m.group(1) if m else ""
+    meta["year"] = pick("aae001")
+    meta["topic"] = pick("ahb010")
+    cdn = pick("cdnServer") or "http://dl.scs.gov.cn"
+    dl_server = pick("downloadServer") or (cdn.rstrip("/") + "/download/")
+    if not hb01:
+        log.info("  国考接口：常量脚本里没找到 hb01Id（专题可能改版）")
+        return [], meta
+
+    raw = sess.get_text("%s/api/res/%s/1110" % (cdn.rstrip("/"), hb01))
+    if not raw:
+        log.info("  国考接口：%s/api/res/%s/1110 无响应", cdn, hb01)
+        return [], meta
+    try:
+        payload = json.loads(raw)
+    except ValueError:
+        log.warning("  国考接口：返回的不是 JSON（前 80 字：%s）", raw[:80])
+        return [], meta
+
+    try:
+        year = int(meta.get("year") or 0) or None
+    except ValueError:
+        year = None
+
+    atts: List[Attachment] = []
+    for item in payload.get("resList") or []:
+        name = unquote(str(item.get("resourceName") or ""))
+        rid = str(item.get("resResourceId") or "")
+        if not name or not rid:
+            continue
+        # 只要职位表类（招考简章 = 全量职位表原件）；排除面试名单/登记表/推荐表
+        if not ("招考简章" in name or "职位表" in name):
+            continue
+        if any(bad in name for bad in ("人员名单", "登记表", "推荐表", "面试")):
+            continue
+        atts.append(Attachment(
+            url=dl_server.rstrip("/") + "/" + rid,
+            title=name,
+            page_url=GUOKAO_DOWNLOAD_PAGE,
+            source_name="国家公务员局·相关下载（官方接口）",
+            exam_type="国考",
+            year=year,
+            kind="jobs",
+        ))
+    return atts, meta
+
+
 def discover_attachments(sess: PoliteSession, src: Source, max_pages: int = 40,
                          deadline: Optional[float] = None) -> DiscoverStats:
     """
@@ -744,15 +822,29 @@ def attachment_key(url: str) -> str:
 
 PHONE_EXT = (".docx", ".doc", ".pdf")
 
+# 国考官方附件通道（专题站是 JS 应用，只能走它自己的数据接口）
+GUOKAO_API_JS = "http://dl.scs.gov.cn/pp/gkweb/core/web/ui/js/core/core-constant.js"
+GUOKAO_DOWNLOAD_PAGE = "http://bm.scs.gov.cn/pp/gkweb/core/web/ui/business/download/gkdownloads.html"
+
 
 def safe_filename(url: str, title: str) -> str:
     """
     生成安全的本地文件名。政府站的下载链接常是 downfile.jsp?classid=0&filename=xxx.zip，
     必须优先取 filename= 参数里的真实文件名（否则扩展名判断会全错，.zip/.docx 会被当成 .xlsx）。
+
+    实测教训：国考官方附件形如 http://dl.scs.gov.cn/download/<资源id>，**URL 里根本没有文件名**，
+    这时要退回用锚文本/资源名里的真实文件名（如「…招考简章.zip」），否则会被当成 .xlsx，
+    导致压缩包被当作 Excel 去解析而失败。
     """
     query = urlparse(url).query
     m = re.search(r"filename=([^&]+)", query)
     raw = unquote(m.group(1)) if m else (os.path.basename(urlparse(url).path) or "attachment")
+    low = os.path.splitext(raw)[1].lower()
+    if low not in EXCEL_EXT + ARCHIVE_EXT + PHONE_EXT:
+        # URL 里没有可用扩展名 -> 从标题/资源名里找真实文件名
+        m2 = re.search(r'([^\\/:*?"<>|\s]+\.(?:xlsx?|xlsm|zip|rar|7z|docx?|pdf))', title or "", re.I)
+        if m2:
+            raw = m2.group(1)
     base = re.sub(r"[\\/:*?\"<>|\s]+", "_", raw)[:80] or "attachment"
     ext = os.path.splitext(base)[1].lower()
     if ext not in EXCEL_EXT + ARCHIVE_EXT + PHONE_EXT:
@@ -778,13 +870,28 @@ def download_attachment(sess: PoliteSession, att: Attachment, out_dir: str) -> L
             fh.write(content)
 
     low = path.lower()
+    # 按"内容特征"判断，而不是只看扩展名：
+    #   .xlsx 本身也是 zip（含 xl/ 目录），必须与"装着 Excel 的压缩包"区分开
+    if zipfile.is_zipfile(path):
+        try:
+            with zipfile.ZipFile(path) as zf:
+                names = zf.namelist()
+        except zipfile.BadZipFile:
+            names = []
+        excel_entries = [n for n in names if n.lower().endswith(EXCEL_EXT)]
+        is_xlsx_itself = any(n.startswith("xl/") for n in names)
+        if is_xlsx_itself and not any(n.lower().endswith(".xls") for n in excel_entries):
+            return [path]                      # 它自己就是 xlsx
+        if excel_entries:
+            return unzip_excel(path, out_dir)  # 是压缩包，解出里面的 Excel
+        log.warning("  压缩包里没有 Excel：%s（%s）", os.path.basename(path), names[:4])
+        return []
     if low.endswith(EXCEL_EXT):
         return [path]
-    if low.endswith(".zip"):
-        return unzip_excel(path, out_dir)
     if low.endswith((".rar", ".7z")):
         log.warning("  .rar/.7z 需外部工具解压，已跳过：%s（请在本地解压后用 --local 传入）", path)
         return []
+    log.warning("  无法识别的附件类型：%s", os.path.basename(path))
     return []
 
 
@@ -1751,6 +1858,25 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                                      "attachments": len(stat.attachments)})
                 continue
             collected.extend(stat.attachments)
+
+        # 国考：专题站是 JS 应用，走官方数据接口（年度专题 id 由官方脚本给出，自动跟随）
+        try:
+            gk_atts, gk_meta = discover_guokao_api(sess)
+            if gk_atts:
+                log.info("  国考官方接口：%s → 发现 %d 个职位表附件",
+                         gk_meta.get("topic") or "（未知专题）", len(gk_atts))
+                for a in gk_atts:
+                    log.info("    · %s", a.title[:60])
+                    if args.check_only:
+                        print("  [发现] %s -> %s" % (a.title[:50], a.url))
+                if not args.check_only:
+                    collected.extend(gk_atts)
+            else:
+                log.info("  国考官方接口：%s → 暂无可下载职位表",
+                         gk_meta.get("topic") or "（未取到专题信息）")
+        except Exception as exc:
+            warnings.append("国考官方接口异常：%s" % exc)
+            log.warning("  国考官方接口异常：%s", exc)
 
         # 两批处理：先电话表（建立索引），再职位表（用索引回填咨询电话）
         # 顺序很重要——否则职位表先解析时还没有电话可填。
