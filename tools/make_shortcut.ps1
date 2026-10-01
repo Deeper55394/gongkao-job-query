@@ -34,8 +34,13 @@ if (-not (Test-Path $DesktopPath)) {
     exit 1
 }
 
-$iconPath = Join-Path $projectRoot 'icon.ico'
-$hasIcon = Test-Path $iconPath
+# —— 图标：优先用"蓝色大肥鱼"（whale.ico），没有就退回 icon.ico ——
+$iconPath = ''
+foreach ($cand in @('whale.ico', 'icon.ico')) {
+    $p = Join-Path $projectRoot $cand
+    if (Test-Path $p) { $iconPath = $p; break }
+}
+$hasIcon = -not [string]::IsNullOrEmpty($iconPath)
 
 # —— 从 data.json 读取当前数据概况，让快捷方式提示文字始终与实际数据一致 ——
 $dataDesc = '公考职位查询（国考 + 江苏省考）· 双击打开，自动同步最新官方数据'
