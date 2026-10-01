@@ -32,6 +32,8 @@ gongkao-job-query/
 ├── index.html                        # 【前端】单文件页面：筛选 / 展示 / 导出 CSV（内嵌最新数据，双击即用）
 ├── 创建桌面快捷方式.bat                 # 【Windows】一键在桌面生成「公考职位查询」快捷方式（带自定义图标）
 ├── 部署到GitHub.bat                   # 【Windows】一键把项目推送到你的 GitHub 仓库（需先装 Git）
+├── 检查新职位表.bat                    # 【Windows】检查官方是否已发布新年度职位表（可自动更新）
+├── jiangsu_regions.json               # 江苏 区县->设区市 映射（城市筛选与咨询电话归属共用）
 ├── 启动.bat                           # 【Windows】一键启动本地服务并打开页面（可自动读取 data.json）
 ├── 更新数据.bat                       # 【Windows】把官方职位表拖上去 → 自动生成 data.json 并同步进 index.html
 ├── start.sh                           # 【macOS/Linux】bash start.sh 一键启动
@@ -55,6 +57,7 @@ gongkao-job-query/
 ├── tools/
 │   ├── serve.py                       # 本地静态服务（供 启动.bat / start.sh 调用）
 │   ├── update_data.py                 # 拖入 Excel 后的交互式更新引导（供 更新数据.bat 调用）
+│   ├── probe_new_cycle.py             # 新年度职位表探针（可按年点名检查/发现即自动更新）
 │   ├── make_shortcut.ps1              # 桌面快捷方式的实际创建逻辑（供 创建桌面快捷方式.bat 调用）
 │   ├── deploy_github.ps1              # 推送代码到 GitHub 的实际逻辑（供 部署到GitHub.bat 调用）
 │   ├── make_icon.py                   # 生成 icon.ico 图标与预览图（Pillow）
@@ -337,6 +340,10 @@ git add data.json index.html && git commit -m "data: 更新 2026 江苏省考职
 | 一键本地服务 | 双击 `启动.bat`（或 `bash start.sh`）自动起服务并打开浏览器，此时可自动读取最新 `data.json`；支持 `--lan` 用手机访问 |
 | 自动读取 | 通过 `fetch` 读取同目录 `data.json`；失败时给出明确原因与三种解决方案 |
 | 手动上传 | 支持 `data.json`、Excel（SheetJS，优先同目录 `xlsx.full.min.js`，其次 CDN）、CSV（内置解析器，无需联网） |
+| 城市筛选 | 13 个设区市 + 省级机关（`jiangsu_regions.json` 把宜兴市/江阴市/涟水县等归到所属市） |
+| 咨询电话 | 从官方《招录单位咨询电话》Word 表按 (城市,单位) 回填，覆盖率约 68% |
+| 年度策略 | 只保留每类考试最新年度；新年度发布后旧年度自动替换（`--year-policy keep-all` 可留历年） |
+| 新表探针 | `检查新职位表.bat` / `tools/probe_new_cycle.py`：点名检查新年度是否已发布 |
 | 筛选条件 | 工作地点（默认勾选**江苏**）、学历（默认**本科**）、专业匹配（生物科学/生物科学类/基础理学类/教育类/不限专业/相近专业，默认全选）、身份（应届/择业期/往届/不限）、政治面貌（中共党员/共青团员/群众/不限）、基层工作经历（无/满1年/满2年/满3年）、其他（教师资格证、师范类、匹配结论、不需电话咨询）、关键词搜索 |
 | 预计命中数 | 每个筛选项旁显示在当前其他条件下可命中的条数，避免"筛到 0 条"的无效操作 |
 | 结果展示 | 桌面端 23 列表格（横向滚动 + 表头吸顶）；手机端自动切换为卡片视图，字段完整可读 |

@@ -755,6 +755,33 @@ def unzip_excel(zip_path: str, out_dir: str) -> List[str]:
     return results
 
 
+def extract_docs_from_archive(path: str) -> List[str]:
+    """
+    从压缩包里解出"招录单位咨询电话"文档（.docx/.doc/.xls*）。
+    实测江苏省人社厅把电话表打包成 zip，里面是 13 市 + 省直 + 垂管系统的 Word 文档。
+    """
+    out_dir = os.path.splitext(path)[0] + "_phone"
+    results: List[str] = []
+    try:
+        with zipfile.ZipFile(path) as zf:
+            for info in zf.infolist():
+                name = info.filename
+                if name.startswith("__MACOSX") or name.endswith("/"):
+                    continue
+                if not name.lower().endswith((".docx", ".doc", ".xls", ".xlsx", ".xlsm")):
+                    continue
+                os.makedirs(out_dir, exist_ok=True)
+                out = os.path.join(out_dir, os.path.basename(name))
+                with zf.open(info) as src_fh, open(out, "wb") as dst_fh:
+                    dst_fh.write(src_fh.read())
+                results.append(out)
+    except zipfile.BadZipFile:
+        log.warning("  压缩包不是 zip 或已损坏：%s（.rar 请先手动解压）", os.path.basename(path))
+    if results:
+        log.info("  电话压缩包 %s -> 解出 %d 个文档", os.path.basename(path), len(results))
+    return results
+
+
 # =========================================================================== #
 #                   四、Excel 解析与字段归一化
 # =========================================================================== #
@@ -1093,11 +1120,146 @@ def classify(job: Dict[str, object]) -> Tuple[str, str, str]:
     return level, "；".join(reasons), "；".join(call_reasons) if call_reasons else "否"
 
 
+# --------------------------- 咨询电话（Word 电话表） --------------------------- #
+
+REGION_FILE = os.path.join(BASE_DIR, "jiangsu_regions.json")
+
+
+def load_region_map() -> Dict[str, str]:
+    """江苏 区县/县级市 -> 设区市 映射（与前端 index.html 共用同一份 jiangsu_regions.json）"""
+    try:
+        with open(REGION_FILE, "r", encoding="utf-8") as fh:
+            data = json.load(fh)
+    except Exception as exc:
+        log.warning("  读取 %s 失败：%s", REGION_FILE, exc)
+        return {}
+    mapping: Dict[str, str] = {}
+    for city, names in data.items():
+        if city.startswith("_"):
+            continue
+        for n in names:
+            mapping[clean_text(n)] = city
+        mapping[city] = city
+    return mapping
+
+
+def _norm_unit(s: str) -> str:
+    """单位名归一化：去空白/全角空格（电话表里常写成"单 位 名 称"）"""
+    return re.sub(r"[\s\u3000]+", "", clean_text(s))
+
+
+def parse_phone_table(path: str) -> List[Tuple[str, str, str]]:
+    """
+    解析"招录单位咨询电话"表，返回 [(地区名称, 单位名称, 咨询电话)]。
+
+    实测两种排版都要支持：
+      · 各市：序号 | 地区名称 | 单位名称 | 咨询电话      （4 列）
+      · 省直：序号 | 单 位 名 称 | 报名咨询电话          （3 列）
+    .docx 用 python-docx；.xls/.xlsx 走 pandas（未来的年份可能直接给 Excel）。
+    """
+    rows: List[Tuple[str, str, str]] = []
+    low = path.lower()
+
+    if low.endswith((".xls", ".xlsx", ".xlsm")):
+        try:
+            df = read_excel_all_sheets(path)
+        except Exception as exc:
+            log.warning("  电话表解析失败 %s：%s", os.path.basename(path), exc)
+            return rows
+        cols = list(df.columns)
+        unit_col = next((c for c in cols if "单位名称" in _norm_unit(str(c)) or _norm_unit(str(c)) == "单位"), None)
+        phone_col = next((c for c in cols if "电话" in str(c)), None)
+        city_col = next((c for c in cols if "地区" in str(c) or "城市" in str(c)), None)
+        if unit_col and phone_col:
+            for _, r in df.iterrows():
+                rows.append((clean_text(r.get(city_col)) if city_col else "",
+                             _norm_unit(r.get(unit_col)), clean_text(r.get(phone_col))))
+        return rows
+
+    if not low.endswith(".docx"):
+        log.warning("  电话表暂只支持 .docx/.xls（旧版 .doc 请先另存为 .docx）：%s", os.path.basename(path))
+        return rows
+
+    try:
+        from docx import Document      # python-docx
+    except ImportError:
+        log.warning("  未安装 python-docx，无法解析电话表（pip install python-docx）")
+        return rows
+
+    try:
+        doc = Document(path)
+    except Exception as exc:
+        log.warning("  电话表打开失败 %s：%s", os.path.basename(path), exc)
+        return rows
+
+    for table in doc.tables:
+        for row in table.rows:
+            raw = [clean_text(c.text) for c in row.cells]
+            cells = [_norm_unit(t) for t in raw]
+            if len(cells) < 3:
+                continue
+            # 表头行跳过
+            if any("单位名称" in c or "咨询电话" in c or "报名咨询" in c for c in cells):
+                continue
+            # 电话单元格里可能有两行号码（如"0514-86556792\n0514-86299302"），用 / 分开而不是粘在一起
+            phone = ""
+            for t in reversed(raw):
+                if re.search(r"\d{3,}", t):
+                    phone = re.sub(r"\s*[\r\n\u3000]+\s*", " / ", t).strip()
+                    break
+            if not phone:
+                continue
+            unit = cells[2] if len(cells) >= 4 else cells[1]
+            city = cells[1] if len(cells) >= 4 else ""
+            if not unit or unit.isdigit():
+                continue
+            rows.append((city, unit, phone))
+    return rows
+
+
+def build_phone_index(entries: List[Tuple[str, str, str]], regions: Dict[str, str]) -> Dict[str, str]:
+    """
+    构建电话索引。键有三种，按优先级查找：
+       ① "设区市|单位名"   ② "|单位名"（唯一时）   ③ 单位名本身
+    """
+    index: Dict[str, str] = {}
+    unit_counts: Dict[str, int] = {}
+    for city, unit, phone in entries:
+        city_key = regions.get(city, city) if city else ""
+        if city_key:
+            index["%s|%s" % (city_key, unit)] = phone
+        unit_counts[unit] = unit_counts.get(unit, 0) + 1
+        index.setdefault("|%s" % unit, phone)
+    for unit, n in unit_counts.items():
+        if n == 1:
+            index[unit] = index["|%s" % unit]
+    return index
+
+
+def lookup_phone(index: Dict[str, str], unit: str, place: str, regions: Dict[str, str]) -> str:
+    """按 (城市, 单位) 找电话；找不到退化为单位名匹配；再退化用包含匹配"""
+    if not index or not unit:
+        return ""
+    u = _norm_unit(unit)
+    city = regions.get(clean_text(place), clean_text(place))
+    for key in ("%s|%s" % (city, u), "|%s" % u, u):
+        if key in index:
+            return index[key]
+    short = re.sub(r"^(省|市|区|县)", "", u)
+    if short:
+        for key in ("%s|%s" % (city, short), "|%s" % short):
+            if key in index:
+                return index[key]
+    return ""
+
+
 # ------------------------------ 行 -> 职位对象 ------------------------------ #
 
 def rows_to_jobs(df: "pd.DataFrame", *, exam_type: str, year: Optional[int],
                  source_url: str, source_name: str, source_file: str,
-                 scraped_at: str) -> List[Dict[str, object]]:
+                 scraped_at: str,
+                 phone_index: Optional[Dict[str, str]] = None,
+                 regions: Optional[Dict[str, str]] = None) -> List[Dict[str, object]]:
     colmap = build_column_map(df)          # {标准字段: 原始列名}
     if not colmap:
         log.warning("  表头无法识别，跳过该文件：%s", source_file)
@@ -1135,6 +1297,12 @@ def rows_to_jobs(df: "pd.DataFrame", *, exam_type: str, year: Optional[int],
         # 江苏省考：用职位代码后两位校正招录对象（定向岗位/应届）
         identity = identity_by_code(g("职位代码"), identity)
 
+        # 咨询电话：表里有就用表里的；没有就从"招录单位咨询电话"文档里按 (城市,单位) 匹配
+        place = g("工作地点") or ("江苏省" if "江苏" in exam_type else "")
+        phone = g("咨询电话")
+        if not phone and phone_index:
+            phone = lookup_phone(phone_index, org or unit, place, regions or {})
+
         job: Dict[str, object] = {
             "考试类型": exam_type,
             "年度": derive_exam_year(exam_type, year, source_file),
@@ -1143,7 +1311,7 @@ def rows_to_jobs(df: "pd.DataFrame", *, exam_type: str, year: Optional[int],
             "用人司局/单位": unit,
             "职位名称": title,
             "招录人数": g("招录人数"),
-            "工作地点": g("工作地点") or ("江苏省" if "江苏" in exam_type else ""),
+            "工作地点": place,
             "学历要求": g("学历要求"),
             "学位要求": g("学位要求"),
             "专业要求原文": major_text,
@@ -1156,7 +1324,7 @@ def rows_to_jobs(df: "pd.DataFrame", *, exam_type: str, year: Optional[int],
             "考试类别": g("考试类别"),
             "面试比例": g("面试比例"),
             "备注": g("备注") or g("职位简介"),
-            "咨询电话": g("咨询电话"),
+            "咨询电话": phone,
             "落户地点": g("落户地点"),
             "机构性质": g("机构性质"),
             "来源链接": source_url,
@@ -1296,7 +1464,10 @@ def build_argparser() -> argparse.ArgumentParser:
         description="公考职位表抓取/清洗工具：生成前端使用的 data.json（仅使用官方数据）",
         formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--local", nargs="+", metavar="XLSX",
-                   help="使用本地已下载的官方职位表（.xlsx/.xls），可传多个文件")
+                   help="使用本地已下载的官方职位表（.xlsx/.xls），可传多个文件；"
+                        "文件名含「电话」的会被当作招录单位咨询电话表")
+    p.add_argument("--phone-file", action="append", default=[], metavar="DOCX",
+                   help="招录单位咨询电话表（.docx/.xls，可重复传）；用于补全职位的咨询电话")
     p.add_argument("--exam-type", default="江苏省考",
                    help="配合 --local 使用：数据所属考试类型（默认 江苏省考）")
     p.add_argument("--year", type=int, default=None, help="配合 --local 使用：年度（默认自动识别）")
@@ -1384,11 +1555,38 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     # 模式 A：解析本地已下载的官方职位表（最稳定，推荐）
     # ------------------------------------------------------------------ #
     if local_mode:
+        # 先分流：文件名含「电话」的当咨询电话表，其余当职位表
+        job_files: List[str] = []
+        phone_files: List[str] = list(args.phone_file or [])
         for path in args.local:
             if not os.path.exists(path):
                 warnings.append("本地文件不存在：%s" % path)
                 log.error("本地文件不存在：%s", path)
                 continue
+            base = os.path.basename(path)
+            if "电话" in base or "phone" in base.lower():
+                if path.lower().endswith((".zip", ".rar", ".7z")):
+                    phone_files.extend(extract_docs_from_archive(path))
+                else:
+                    phone_files.append(path)
+            else:
+                job_files.append(path)
+
+        # 咨询电话索引（(城市,单位) -> 电话）
+        regions = load_region_map()
+        phone_entries: List[Tuple[str, str, str]] = []
+        for pf in phone_files:
+            rows_ = parse_phone_table(pf)
+            if rows_:
+                log.info("  电话表 %s -> %d 条", os.path.basename(pf), len(rows_))
+            phone_entries.extend(rows_)
+        phone_index = build_phone_index(phone_entries, regions) if phone_entries else {}
+        if phone_entries:
+            log.info("  咨询电话索引：%d 条电话记录 -> %d 个键", len(phone_entries), len(phone_index))
+        elif phone_files:
+            warnings.append("提供了电话表但没解析出内容（.doc 旧格式请先另存为 .docx）")
+
+        for path in job_files:
             try:
                 df = read_excel_all_sheets(path)
             except Exception as exc:
@@ -1404,7 +1602,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             jobs = rows_to_jobs(df, exam_type=args.exam_type, year=file_year,
                                 source_url=args.source_url or "（本地文件，无在线链接）",
                                 source_name=args.source_name or "本地导入的官方职位表",
-                                source_file=os.path.basename(path), scraped_at=scraped_at)
+                                source_file=os.path.basename(path), scraped_at=scraped_at,
+                                phone_index=phone_index, regions=regions)
             log.info("  %s -> 解析出 %d 条职位", os.path.basename(path), len(jobs))
             fresh.extend(jobs)
             sources_meta.append({
@@ -1415,6 +1614,14 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 "records": len(jobs),
                 "fetched_at": scraped_at,
             })
+
+        if phone_entries and fresh:
+            filled = sum(1 for j in fresh if clean_text(j.get("咨询电话")))
+            note = ("咨询电话已从官方《招录单位咨询电话》回填 %d/%d 条（%.0f%%；"
+                    "其余为未在电话表中列明的单位，如「乡镇机关」「区教育局」）" % (
+                        filled, len(fresh), 100.0 * filled / len(fresh)))
+            log.info("  " + note)
+            warnings.append(note)
 
     # ------------------------------------------------------------------ #
     # 模式 B：联网抓取官方渠道

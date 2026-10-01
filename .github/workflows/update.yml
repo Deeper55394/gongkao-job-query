@@ -109,6 +109,12 @@ jobs:
           python tools/check_html.py index.html
           python tools/build_standalone.py --check || echo "::warning::index.html 内嵌数据与 data.json 不同步，本次会一并更新"
 
+      - name: 探针：官方是否已发布新年度职位表
+        run: |
+          # 只做轻量探测（几个页面），无论结果如何都不影响主流程；
+          # 发现新年度时日志里会出现 🎉 与具体链接，便于人工确认
+          python tools/probe_new_cycle.py --delay 2 || true
+
       - name: 抓取并生成 data.json
         id: scrape
         env:

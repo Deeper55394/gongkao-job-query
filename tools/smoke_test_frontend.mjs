@@ -28,7 +28,7 @@ const scripts = [...html.matchAll(/<script\b([^>]*)>([\s\S]*?)<\/script>/gi)]
   .filter(m => !/\bsrc=/i.test(m[1]) && !/application\/json/i.test(m[1]))
   .map(m => m[2]);
 if (!scripts.length) { console.error('未找到内联 <script>'); process.exit(1); }
-const code = scripts.join('\n') + '\n;globalThis.__api = { state, classify, applyAndRender, majorTags, COLUMNS };';
+const code = scripts.join('\n') + '\n;globalThis.__api = { state, classify, applyAndRender, majorTags, COLUMNS, cityOf, JIANGSU_REGIONS };';
 
 const embeddedMatch = html.match(/<script id="embedded-data" type="application\/json">([\s\S]*?)<\/script>/i);
 const embeddedRaw = embeddedMatch ? embeddedMatch[1].trim() : '';
@@ -143,6 +143,28 @@ const okFetch = async () => ({ ok: true, status: 200, text: async () => dataJson
   check('CSV 行数 = 命中数 + 表头', csvLines.length, state.filtered.length + 1);
   check('CSV 表头包含 专业要求原文/来源链接/匹配结论',
     ['专业要求原文', '来源链接', '匹配结论'].every(h => csvLines[0].includes(h)), true);
+
+  /* ---- 城市归属（防脱节 + 正确性）---- */
+  const { cityOf, JIANGSU_REGIONS } = api;
+  const regionFile = JSON.parse(fs.readFileSync(path.join(ROOT, 'jiangsu_regions.json'), 'utf8'));
+  const expectedRegions = {};
+  Object.keys(regionFile).filter(k => !k.startsWith('_')).forEach(k => { expectedRegions[k] = regionFile[k]; });
+  check('前端区县映射与 jiangsu_regions.json 完全一致', JIANGSU_REGIONS, expectedRegions);
+  check('cityOf：县级市归到所属设区市',
+    [cityOf('宜兴市'), cityOf('江阴市'), cityOf('昆山市'), cityOf('涟水县'), cityOf('东台市')],
+    ['无锡市', '无锡市', '苏州市', '淮安市', '盐城市']);
+  check('cityOf：市区/新区归到本市',
+    [cityOf('南京市江北新区'), cityOf('无锡市'), cityOf('江苏省')],
+    ['南京市', '无锡市', '省级机关']);
+  check('城市筛选生效', (() => {
+    state.filters.城市 = ['无锡市'];
+    applyAndRender();
+    const n = state.filtered.length;
+    const allWuxi = state.filtered.every(j => cityOf(j['工作地点']) === '无锡市');
+    state.filters.城市 = [];
+    applyAndRender();
+    return [n > 0, allWuxi];
+  })(), [true, true]);
 }
 
 /* ============================ 阶段 2：data.json 读不到（双击打开） ============================ */
