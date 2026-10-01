@@ -2012,6 +2012,17 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             j["是否示例"] = True
         warnings.append("当前 data.json 为格式示例数据，不是真实职位，请以官方职位表为准")
 
+    # sources：与旧 meta 合并，避免"只导入国考/只导入省考"时把另一边的来源记录抹掉
+    # （每条职位自身也带 来源链接/来源文件，这里只是 meta 层的汇总）
+    merged_sources: List[Dict[str, object]] = []
+    seen_src: set = set()
+    for s in list(sources_meta) + list((old_meta or {}).get("sources") or []):
+        key = (clean_text(s.get("source_name")), clean_text(s.get("file") or s.get("title")))
+        if key in seen_src:
+            continue
+        seen_src.add(key)
+        merged_sources.append(s)
+
     meta = {
         "last_update": scraped_at,
         "last_update_text": started.strftime("%Y-%m-%d %H:%M") + "（北京时间）",
@@ -2023,7 +2034,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         "updated_records": updated,
         "scope": args.scope,
         "exam_types": sorted({clean_text(j.get("考试类型")) for j in merged if j.get("考试类型")}),
-        "sources": sources_meta,
+        "sources": merged_sources,
         "warnings": warnings,
         "disclaimer": "数据来自官方公开职位表，仅供筛选参考；报考条件以官方公告、职位表原件及招录单位答复为准。",
     }
