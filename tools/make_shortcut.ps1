@@ -11,7 +11,7 @@
 # ============================================================================
 
 param(
-    [ValidateSet('main', 'update', 'both')]
+    [ValidateSet('main', 'update', 'probe', 'both', 'all')]
     [string]$Which = 'main',
     [string]$DesktopPath = ''          # 仅用于测试时指定其他目录
 )
@@ -37,6 +37,28 @@ if (-not (Test-Path $DesktopPath)) {
 $iconPath = Join-Path $projectRoot 'icon.ico'
 $hasIcon = Test-Path $iconPath
 
+# —— 从 data.json 读取当前数据概况，让快捷方式提示文字始终与实际数据一致 ——
+$dataDesc = '公考职位查询（国考 + 江苏省考）· 双击打开，自动同步最新官方数据'
+$dataFile = Join-Path $projectRoot 'data.json'
+if (Test-Path $dataFile) {
+    try {
+        $dj = Get-Content -LiteralPath $dataFile -Raw -Encoding UTF8 | ConvertFrom-Json
+        $jobs = $dj.jobs
+        if ($jobs -and $jobs.Count -gt 0) {
+            $byType = $jobs | Group-Object -Property 考试类型 | Sort-Object Name
+            $parts = @()
+            foreach ($g in $byType) { $parts += ('{0} {1} 条' -f $g.Name, $g.Count) }
+            $dataDesc = ('公考职位查询（{0}）· 共 {1} 条官方职位 · 双击打开并自动同步最新数据' -f
+                         ($parts -join ' + '), $jobs.Count)
+            $stamp = ''
+            if ($dj.meta -and $dj.meta.last_update_text) { $stamp = [string]$dj.meta.last_update_text }
+            if ($stamp) { $dataDesc = $dataDesc + '｜数据更新：' + $stamp }
+        }
+    } catch {
+        Write-Host ("[提示] 读取 data.json 失败，快捷方式将使用通用说明：{0}" -f $_.Exception.Message) -ForegroundColor Yellow
+    }
+}
+
 # —— 快捷方式定义 ——
 # WindowStyle：7 = 最小化（启动服务的黑窗口不挡事），1 = 正常（需要交互输入）
 $defs = @(
@@ -44,19 +66,30 @@ $defs = @(
         Key      = 'main'
         Name     = '公考职位查询.lnk'
         Target   = Join-Path $projectRoot '启动.bat'
-        Desc     = '公考职位查询工具 · 本科·生物科学（师范）· 江苏（双击打开，自动读取最新 data.json）'
+        Desc     = $dataDesc
         Style    = 7
     },
     @{
         Key      = 'update'
         Name     = '更新公考职位数据.lnk'
         Target   = Join-Path $projectRoot '更新数据.bat'
-        Desc     = '把官方职位表 Excel 拖到本快捷方式上，即可更新 data.json'
+        Desc     = '把官方职位表 Excel 拖到本快捷方式上，即可更新 data.json（省考 / 国考都支持）'
+        Style    = 1
+    },
+    @{
+        Key      = 'probe'
+        Name     = '检查公考新职位表.lnk'
+        Target   = Join-Path $projectRoot '检查新职位表.bat'
+        Desc     = '检查官方是否已发布新年度（如 2027）职位表；发现后可直接自动更新'
         Style    = 1
     }
 )
 
-$want = if ($Which -eq 'both') { @('main', 'update') } else { @($Which) }
+$want = switch ($Which) {
+    'both' { @('main', 'update') }
+    'all'  { @('main', 'update', 'probe') }
+    default { @($Which) }
+}
 $shell = New-Object -ComObject WScript.Shell
 $created = 0
 
