@@ -1,0 +1,248 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>部署到 GitHub Pages（让别人也能打开你这份职位查询工具）</title>
+<style>
+  :root{--c-main:#1a56db;--c-text:#1f2937;--c-sub:#6b7280;--c-line:#e3e8ef;--c-bg:#f5f7fa;--c-code:#0f172a}
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--c-bg);color:var(--c-text);
+    font:15px/1.85 -apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif}
+  header.top{background:linear-gradient(135deg,#1a56db,#1e3a8a);color:#fff;padding:20px 18px}
+  header.top .t{font-size:20px;font-weight:700}
+  header.top .s{font-size:12.5px;opacity:.9;margin-top:4px}
+  .wrap{max-width:900px;margin:0 auto;padding:0 14px 60px}
+  main{background:#fff;border:1px solid var(--c-line);border-radius:12px;
+    box-shadow:0 1px 3px rgba(16,24,40,.06);padding:22px 24px;margin-top:14px}
+  nav.toc{background:#fff;border:1px solid var(--c-line);border-radius:12px;padding:14px 18px;margin-top:14px;font-size:14px}
+  nav.toc b{display:block;margin-bottom:6px;color:var(--c-main)}
+  nav.toc a{color:var(--c-text);text-decoration:none;display:block;padding:2px 0}
+  nav.toc a:hover{color:var(--c-main);text-decoration:underline}
+  nav.toc a.lv3{padding-left:18px;font-size:13.5px;color:var(--c-sub)}
+  h1{font-size:22px;margin:6px 0 16px;padding-bottom:10px;border-bottom:2px solid var(--c-main)}
+  h2{font-size:19px;margin:30px 0 10px;padding-left:10px;border-left:4px solid var(--c-main)}
+  h3{font-size:16.5px;margin:22px 0 8px;color:#1e3a8a}
+  h4{font-size:15px;margin:18px 0 6px}
+  p{margin:10px 0}
+  a{color:var(--c-main);word-break:break-all}
+  ul,ol{margin:10px 0;padding-left:24px}
+  li{margin:5px 0}
+  li>ul,li>ol{margin:5px 0}
+  code{background:#eef2f7;color:#b91c1c;padding:1.5px 5px;border-radius:4px;font-size:13px;
+    font-family:Consolas,Monaco,"Courier New",monospace}
+  pre.code{background:var(--c-code);color:#e2e8f0;padding:14px 16px;border-radius:10px;overflow:auto;font-size:13px;line-height:1.7}
+  pre.code code{background:none;color:inherit;padding:0}
+  blockquote{margin:14px 0;padding:12px 16px;background:#fffbeb;border-left:4px solid #fcd34d;border-radius:0 8px 8px 0;color:#7c4a03}
+  blockquote p{margin:6px 0}
+  hr{border:0;border-top:1px dashed #cbd5e1;margin:26px 0}
+  .table-wrap{overflow:auto;margin:14px 0}
+  table{border-collapse:collapse;width:100%;font-size:13.5px}
+  th,td{border:1px solid var(--c-line);padding:8px 10px;text-align:left;vertical-align:top}
+  th{background:#f1f5f9;white-space:nowrap}
+  tbody tr:nth-child(even){background:#fafbfc}
+  footer{text-align:center;color:var(--c-sub);font-size:12px;margin-top:20px;line-height:1.9}
+  .top-link{position:fixed;right:16px;bottom:16px;background:var(--c-main);color:#fff;border-radius:999px;
+    padding:8px 14px;font-size:13px;text-decoration:none;box-shadow:0 4px 12px rgba(26,86,219,.35)}
+  @media print{
+    header.top{background:#1a56db !important;-webkit-print-color-adjust:exact}
+    nav.toc,.top-link{display:none}
+    main{border:0;box-shadow:none;padding:0;margin:0}
+    body{background:#fff}
+    h2{page-break-after:avoid}
+    table,pre.code,blockquote{page-break-inside:avoid}
+  }
+  @media (max-width:600px){
+    main{padding:16px 14px}
+    h1{font-size:19px}h2{font-size:17px}
+  }
+</style>
+</head>
+<body>
+<header class="top">
+  <div class="t">部署到 GitHub Pages（让别人也能打开你这份职位查询工具）</div>
+  <div class="s">本科 · 生物科学（师范） · 江苏 ｜ 国考 + 江苏省考职位筛选工具</div>
+</header>
+<div class="wrap">
+<nav class="toc"><b>目录</b>
+<a href="#sec-1">〇、先搞清楚要传什么</a>
+<a href="#sec-2">一、方式 A：网页拖拽上传（不用装任何软件）</a>
+<a href="#sec-3" class="lv3">第 1 步：注册 / 登录 GitHub</a>
+<a href="#sec-4" class="lv3">第 2 步：新建仓库</a>
+<a href="#sec-5" class="lv3">第 3 步：上传文件</a>
+<a href="#sec-6" class="lv3">第 4 步：允许机器人把新数据写回仓库</a>
+<a href="#sec-7" class="lv3">第 5 步：开启网页托管（Pages）</a>
+<a href="#sec-8" class="lv3">第 6 步：访问你的网址</a>
+<a href="#sec-9" class="lv3">第 7 步（可选）：立刻跑一次自动更新</a>
+<a href="#sec-10">二、方式 B：装 Git 后双击脚本（适合以后经常更新）</a>
+<a href="#sec-11" class="lv3">第 1 步：安装 Git for Windows</a>
+<a href="#sec-12" class="lv3">第 2 步：在 GitHub 建一个空仓库</a>
+<a href="#sec-13" class="lv3">第 3 步：双击 `部署到GitHub.bat`</a>
+<a href="#sec-14" class="lv3">第 4 步：完成两个设置</a>
+<a href="#sec-15">三、以后怎么更新数据</a>
+<a href="#sec-16">四、部署成功怎么验证</a>
+<a href="#sec-17">五、常见问题</a>
+<a href="#sec-18">六、一句话总结</a></nav>
+<main>
+<h1>部署到 GitHub Pages（让别人也能打开你这份职位查询工具）</h1>
+<blockquote><p>目标：把工具传到 GitHub，用一个网址访问，并且<strong>每天自动更新数据</strong>。 全程两种做法，<strong>推荐先看方式 A（不用装任何软件）</strong>。</p></blockquote>
+<hr />
+<h2 id="sec-1">〇、先搞清楚要传什么</h2>
+<p>要传的是<strong>仓库根目录</strong>下这些东西（<code>index.html</code> 和 <code>data.json</code> 必须同级）：</p>
+<div class="table-wrap"><table>
+<thead><tr>
+<th>必须传</th>
+<th>作用</th>
+</tr></thead><tbody>
+<tr><td><code>index.html</code></td><td>网页本体（已内嵌数据，打开就有内容）</td></tr>
+<tr><td><code>data.json</code></td><td>数据（网页会自动读取它，比内嵌数据优先）</td></tr>
+<tr><td><code>xlsx.full.min.js</code></td><td>让网页能离线解析 Excel（上传职位表用）</td></tr>
+<tr><td><code>icon.ico</code>、<code>.nojekyll</code></td><td>图标、GitHub Pages 配置（<code>.nojekyll</code> 是空文件，别漏）</td></tr>
+<tr><td><code>.github/workflows/update.yml</code></td><td>每天自动抓取职位表的机器人</td></tr>
+<tr><td><code>scraper.py</code>、<code>requirements.txt</code>、<code>tools/</code></td><td>机器人运行时要用</td></tr>
+<tr><td><code>README.md</code>、<code>使用教程.html</code>、<code>先看这里.txt</code> 等</td><td>说明文档，可选</td></tr>
+</tbody></table></div>
+<p>我已经把上面这些打成一个<strong>根目录结构</strong>的压缩包，直接用这个包最省事：</p>
+<pre class="code"><code>GitHub部署包_日期.zip     ← 解压后里面的文件要放在仓库根目录（不要再套一层文件夹！）</code></pre>
+<blockquote><p>解压后如果看到一个 <code>GitHub部署包</code> 文件夹，进去把<strong>里面的内容</strong>全选，才是要上传的东西。</p></blockquote>
+<hr />
+<h2 id="sec-2">一、方式 A：网页拖拽上传（不用装任何软件）</h2>
+<h3 id="sec-3">第 1 步：注册 / 登录 GitHub</h3>
+<p>打开 https://github.com ，没有账号就注册一个（免费）。</p>
+<h3 id="sec-4">第 2 步：新建仓库</h3>
+<ol>
+<li>打开 https://github.com/new ；
+</li>
+<li><strong>Repository name</strong> 填 <code>gongkao-job-query</code>（名字随意，建议用英文）；
+</li>
+<li><strong>Public / Private</strong> 选 <strong>Public</strong>（私有仓库用 Pages 需要付费账号）；
+</li>
+<li><strong>不要</strong>勾选 "Add a README file"、".gitignore"、"license"（保持空仓库最好传）；
+</li>
+<li>点 <strong>Create repository</strong>。
+</li></ol>
+<h3 id="sec-5">第 3 步：上传文件</h3>
+<ol>
+<li>在新出现的空仓库页面，点中间那行蓝色的 <strong>uploading an existing file</strong>；
+</li>
+<li>把解压出来的<strong>所有文件和文件夹全选</strong>（资源管理器里 <code>Ctrl + A</code>），<strong>拖进浏览器中间那个虚线框</strong>；
+</li>
+<li>等上传列表出现（应该能看到 <code>index.html</code>、<code>data.json</code>、<code>tools/…</code>、<code>.github/…</code> 等，约 30 个文件）；
+</li>
+<li>在下面的 <strong>Commit changes</strong> 输入框里写一句 <code>首次上传</code>，点绿色按钮提交。
+</li></ol>
+<blockquote><p>上传完成后，仓库首页应该能看到 <code>index.html</code>、<code>data.json</code>、<code>tools</code>、<code>.github</code> 等。 如果<strong>看不到 <code>.github</code> 文件夹</strong>（有些浏览器会跳过以点开头的文件夹），手动补一个： 点 <strong>Add file → Create new file</strong>，文件名填 <code>.github/workflows/update.yml</code> （注意：在文件名输入框里直接输入 <code>/</code> 会自动变成目录），然后把本机文件 <code>.github/workflows/update.yml</code> 的内容整个复制粘贴进去，提交即可。</p></blockquote>
+<h3 id="sec-6">第 4 步：允许机器人把新数据写回仓库</h3>
+<ol>
+<li>打开仓库的 <strong>Settings → Actions → General</strong>；
+</li>
+<li>拉到最下面 <strong>Workflow permissions</strong>，选 <strong>Read and write permissions</strong>；
+</li>
+<li>点 <strong>Save</strong>。
+</li></ol>
+<blockquote><p>不做这一步，每天定时任务抓到的数据<strong>没法提交回仓库</strong>（会看到权限报错）。</p></blockquote>
+<h3 id="sec-7">第 5 步：开启网页托管（Pages）</h3>
+<ol>
+<li>打开 <strong>Settings → Pages</strong>；
+</li>
+<li><strong>Source</strong> 二选一（推荐 A）：
+<ul>
+<li><strong>A. GitHub Actions</strong> —— 用仓库自带的 <code>update.yml</code> 部署（推荐，官方新方式）；
+</li>
+<li><strong>B. Deploy from a branch</strong> —— Branch 选 <code>main</code>，目录选 <code>/ (root)</code>，保存。 （分支部署时 GitHub 直接托管仓库根目录，页面上能直接访问 <code>index.html</code>，同样可用； 仓库自带的工作流会<strong>自动判断并跳过</strong> Actions 部署，不会天天报红。）
+</li></ul>
+</li></ol>
+<ol>
+<li>保存后等 1～2 分钟。
+</li></ol>
+<h3 id="sec-8">第 6 步：访问你的网址</h3>
+<pre class="code"><code>https://你的用户名.github.io/gongkao-job-query/</code></pre>
+<p>例如用户名是 <code>zhangsan</code>、仓库名是 <code>gongkao-job-query</code>，网址就是 <code>https://zhangsan.github.io/gongkao-job-query/</code> 。</p>
+<p>打开后应该能看到工具页面，顶部「数据最后更新」显示的是 <code>data.json</code> 里的时间。</p>
+<h3 id="sec-9">第 7 步（可选）：立刻跑一次自动更新</h3>
+<p>打开仓库的 <strong>Actions</strong> 标签 → 左侧选「自动更新公考职位数据」→ 右侧 <strong>Run workflow</strong> → 绿色按钮。 跑完可以点进去看日志：能抓到就更新数据，抓不到会明确提示原因（不影响网页访问）。</p>
+<hr />
+<h2 id="sec-10">二、方式 B：装 Git 后双击脚本（适合以后经常更新）</h2>
+<h3 id="sec-11">第 1 步：安装 Git for Windows</h3>
+<p>下载 https://git-scm.com/download/win ，一路「下一步」装完（默认选项就行）。</p>
+<h3 id="sec-12">第 2 步：在 GitHub 建一个空仓库</h3>
+<p>同方式 A 的第 1、2 步（记下你的<strong>用户名</strong>和<strong>仓库名</strong>）。</p>
+<h3 id="sec-13">第 3 步：双击 <code>部署到GitHub.bat</code></h3>
+<p>脚本会依次问你/自动完成：</p>
+<ol>
+<li>检查 git 是否可用；
+</li>
+<li>首次运行会问你的名字和邮箱（只是写进提交记录，随便填）；
+</li>
+<li>自动 <code>git init</code> → 提交全部文件 → 分支设为 <code>main</code>；
+</li>
+<li>问你的 GitHub 用户名，拼出仓库地址（也可以直接粘贴完整仓库地址）；
+</li>
+<li>执行推送 —— <strong>第一次会弹出 GitHub 登录窗口，用浏览器授权即可</strong>；
+</li>
+<li>推送成功后打印剩下要点的两个设置页地址，并可以帮你自动打开。
+</li></ol>
+<blockquote><p>只想看看当前状态、不做任何修改：<code>部署到GitHub.bat -Check</code></p></blockquote>
+<h3 id="sec-14">第 4 步：完成两个设置</h3>
+<p>同方式 A 的第 4、5 步（Actions 权限 + Pages 来源）。</p>
+<hr />
+<h2 id="sec-15">三、以后怎么更新数据</h2>
+<div class="table-wrap"><table>
+<thead><tr>
+<th>你用什么方式部署</th>
+<th>更新数据的做法</th>
+</tr></thead><tbody>
+<tr><td>方式 A / B 都行</td><td><strong>什么都不用做</strong>：每天北京时间 10:00 机器人自动跑（前提是官网能访问到）</td></tr>
+<tr><td>想手动触发</td><td>仓库 <strong>Actions → 自动更新公考职位数据 → Run workflow</strong></td></tr>
+<tr><td>拿到官方 Excel 想立刻更新</td><td>① 本机用 <code>更新数据.bat</code> 生成新 <code>data.json</code>；② 在网页上打开仓库里的 <code>data.json</code> → 点铅笔图标（Edit）→ 全选删除 → 粘贴新内容 → Commit changes</td></tr>
+</tbody></table></div>
+<blockquote><p><strong>重要提醒</strong>：GitHub 的服务器在境外，政府网站常限制境外 IP 访问，所以<strong>自动抓取可能长期失败</strong>。 这不是部署出错，遇到这种情况就用上面第 3 行的手动办法。 工具抓不到数据时不会覆盖已有 <code>data.json</code>，也绝不会编造数据。</p></blockquote>
+<hr />
+<h2 id="sec-16">四、部署成功怎么验证</h2>
+<ol>
+<li>网址能打开，页面上有筛选条件、有职位表格（即使是示例数据）；
+</li>
+<li>页面顶部「数据最后更新」和时间对得上；
+</li>
+<li>手机浏览器打开同一个网址也能用（表格会自动变成卡片）；
+</li>
+<li>仓库 <strong>Actions</strong> 里能看到「自动更新公考职位数据」的运行记录；
+</li>
+<li>点页面里的「导出当前筛选结果 CSV」，能下载到 CSV 文件。
+</li></ol>
+<hr />
+<h2 id="sec-17">五、常见问题</h2>
+<div class="table-wrap"><table>
+<thead><tr>
+<th>现象</th>
+<th>原因与解决</th>
+</tr></thead><tbody>
+<tr><td>打开网址是 404</td><td>Pages 还没生效或路径不对。等 1～2 分钟；确认地址形如 <code>https://用户名.github.io/仓库名/</code>；确认 <code>index.html</code> 在仓库<strong>根目录</strong>而不是子文件夹里</td></tr>
+<tr><td>页面能开但提示"未能自动读取 data.json"</td><td>多半是 <code>data.json</code> 没传或不在根目录。检查仓库首页有没有 <code>data.json</code>，且与 <code>index.html</code> 同级</td></tr>
+<tr><td>Actions 报权限错误，改不了 data.json</td><td>回到 Settings → Actions → General → Workflow permissions，选 <strong>Read and write</strong></td></tr>
+<tr><td>Actions 报 <code>Get Pages site failed</code></td><td>Pages 来源没设成 GitHub Actions。要么改设置（Settings → Pages → Source = GitHub Actions），要么改成分支部署（工作流会自动跳过部署步骤）</td></tr>
+<tr><td>定时任务一直抓不到数据</td><td>境外 IP 被官网限制，属正常。用手动方式更新 <code>data.json</code>（见第三节）</td></tr>
+<tr><td>上传时提示文件太大</td><td>本项目最大文件是 <code>xlsx.full.min.js</code>（约 861 KB），远低于 25 MB 限制；若提示过大，说明你误传了别的文件</td></tr>
+<tr><td>想删掉重来</td><td>仓库 Settings → 最下面 Delete this repository；或只删 Pages：Settings → Pages → 关闭</td></tr>
+<tr><td>想用私有仓库</td><td>GitHub Pages 对私有仓库需要付费（Pro）；免费账号请用 Public</td></tr>
+<tr><td>想绑自己的域名</td><td>Settings → Pages → Custom domain 填域名，并在域名商处加 CNAME 解析到 <code>你的用户名.github.io</code>（本项目未强依赖域名，可跳过）</td></tr>
+</tbody></table></div>
+<hr />
+<h2 id="sec-18">六、一句话总结</h2>
+<ol>
+<li>新建 <strong>Public</strong> 空仓库 → 2. 把 <code>GitHub部署包</code> 里的<strong>内容</strong>传到<strong>根目录</strong> →
+</li>
+<li>Settings → Actions 选 <strong>Read and write</strong> → 4. Settings → Pages 选 <strong>GitHub Actions</strong>（或分支 main / root）→
+</li>
+<li>打开 <code>https://用户名.github.io/仓库名/</code> 即可。
+</li></ol>
+<p>之后每天自动更新；抓不到就按第三节手动更新 <code>data.json</code>，一次一分钟。</p>
+</main>
+<footer>
+  公考职位查询工具 · 使用教程 ｜ 数据来自官方公开职位表，报名条件以官方公告与招录单位答复为准<br />
+  按 Ctrl + P 可打印或另存为 PDF
+</footer>
+</div>
+<a class="top-link" href="#">↑ 回到顶部</a>
+</body>
+</html>

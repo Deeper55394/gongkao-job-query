@@ -1,0 +1,204 @@
+name: 自动更新公考职位数据
+
+# =========================================================================== #
+# 每天 UTC 02:00（北京时间 10:00）自动运行 scraper.py：
+#   1. 检查国考专题 / 江苏先锋网 / 江苏省人社厅 / 各设区市人社局是否有新的职位表；
+#   2. 下载并用 pandas 解析清洗，生成 data.json；
+#   3. 若 data.json 有变化则自动提交回仓库；
+#   4. 顺带把 index.html + data.json 发布到 GitHub Pages。
+#
+# 注意：GitHub 托管的运行器在境外，部分政府网站可能限制境外 IP 访问。
+#       若定时任务长期抓取不到数据，请参考 README 的「本地兜底方案」，
+#       在本机下载官方 Excel 后执行 scraper.py --local 再手动提交 data.json。
+# =========================================================================== #
+
+on:
+  schedule:
+    - cron: '0 2 * * *'          # UTC 02:00 = 北京时间 10:00
+  workflow_dispatch:              # 支持手动触发
+    inputs:
+      dry_run:
+        description: '仅解析不写入 data.json（调试用）'
+        type: boolean
+        default: false
+      delay:
+        description: '同一域名请求最小间隔（秒），默认 3'
+        type: string
+        default: '3'
+      scope:
+        description: '收录范围：jiangsu-biology（默认）或 all'
+        type: choice
+        options: ['jiangsu-biology', 'all']
+        default: 'jiangsu-biology'
+
+# 允许工作流把 data.json 提交回仓库，并部署 GitHub Pages
+permissions:
+  contents: write
+  pages: write
+  id-token: write
+
+# 同一时间只跑一个，避免并发提交冲突
+concurrency:
+  group: update-gongkao-data
+  cancel-in-progress: false
+
+jobs:
+  # ------------------------------------------------------------------ #
+  # 任务一：抓取 + 提交 data.json
+  # ------------------------------------------------------------------ #
+  update-data:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    outputs:
+      changed: ${{ steps.commit.outputs.changed }}
+      pages_mode: ${{ steps.pages_mode.outputs.build_type }}
+
+    steps:
+      - name: 检出仓库
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+          persist-credentials: true
+
+      - name: 安装 Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: 检查 Pages 使用的是哪种部署方式
+        id: pages_mode
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -uo pipefail
+          api="https://api.github.com/repos/${GITHUB_REPOSITORY}/pages"
+          code=$(curl -sS -o /tmp/pages.json -w '%{http_code}' \
+                 -H "Authorization: Bearer ${GH_TOKEN}" \
+                 -H "Accept: application/vnd.github+json" "$api" || echo 000)
+          mode="unknown"
+          if [ "$code" = "200" ]; then
+            mode=$(python3 -c "import json;print(json.load(open('/tmp/pages.json')).get('build_type') or 'unknown')" 2>/dev/null || echo unknown)
+          fi
+          echo "Pages build_type = ${mode}（legacy=分支部署，workflow=GitHub Actions 部署）"
+          if [ "$mode" = "legacy" ]; then
+            echo "::notice::检测到 Pages 使用「分支部署」，本次将跳过 Actions 部署（data.json 已正常更新）"
+          fi
+          echo "build_type=${mode}" >> "$GITHUB_OUTPUT"
+
+      - name: 安装依赖
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: 运行自检（验证解析与匹配逻辑）
+        run: python scraper.py --selftest
+
+      - name: 校验工作流自身与前端页面
+        run: |
+          python tools/check_workflow.py
+          python tools/check_html.py index.html
+          python tools/build_standalone.py --check || echo "::warning::index.html 内嵌数据与 data.json 不同步，本次会一并更新"
+
+      - name: 抓取并生成 data.json
+        id: scrape
+        env:
+          # 让日志中的中文正常输出
+          PYTHONIOENCODING: utf-8
+        run: |
+          set -uo pipefail
+          DRY=""
+          if [ "${{ github.event.inputs.dry_run }}" = "true" ]; then DRY="--dry-run"; fi
+          DELAY="${{ github.event.inputs.delay }}"; DELAY="${DELAY:-3}"
+          SCOPE="${{ github.event.inputs.scope }}"; SCOPE="${SCOPE:-jiangsu-biology}"
+
+          code=0
+          python scraper.py --delay "$DELAY" --scope "$SCOPE" $DRY || code=$?
+          echo "exit_code=$code" >> "$GITHUB_OUTPUT"
+
+          if [ "$code" = "0" ]; then
+            echo "✅ 抓取成功"
+          elif [ "$code" = "2" ]; then
+            # 未发现新职位表（属正常情况，例如尚未到发布期）：保留旧数据，不视为失败
+            echo "::warning::本次未获取到新的官方职位表，data.json 保持为上一次结果"
+          else
+            echo "::error::scraper.py 执行失败（exit $code）"
+            exit "$code"
+          fi
+
+      - name: 把最新 data.json 内嵌进 index.html（保证双击打开也能看到最新数据）
+        run: python tools/build_standalone.py
+
+      - name: 提交更新后的 data.json 与 index.html
+        id: commit
+        run: |
+          set -euo pipefail
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          if git diff --quiet -- data.json index.html; then
+            echo "data.json / index.html 无变化，无需提交"
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          git add data.json index.html
+          git commit -m "chore(data): 自动更新公考职位数据 $(date -u '+%Y-%m-%d %H:%M UTC')"
+          git push
+          echo "changed=true" >> "$GITHUB_OUTPUT"
+          echo "✅ 已提交并推送 data.json + index.html"
+
+      - name: 上传抓取到的原始职位表（便于人工核对，保留 7 天）
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: raw-position-tables
+          path: downloads/
+          retention-days: 7
+          if-no-files-found: ignore
+
+  # ------------------------------------------------------------------ #
+  # 任务二：发布到 GitHub Pages（index.html + data.json）
+  #
+  # 两种部署方式都支持，脚本会自动判断，不会因为配置不同而天天报红：
+  #   ① Settings → Pages → Source = "GitHub Actions"   → 由本任务部署（推荐）
+  #   ② Settings → Pages → Source = "Deploy from a branch" → 本任务自动跳过
+  #      （分支部署时 GitHub 会直接托管仓库根目录，改完设置即可访问）
+  # ------------------------------------------------------------------ #
+  deploy-pages:
+    needs: update-data
+    if: >-
+      ${{ github.ref == 'refs/heads/main'
+          && github.event.inputs.dry_run != 'true'
+          && needs.update-data.outputs.pages_mode != 'legacy' }}
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: 检出仓库
+        uses: actions/checkout@v4
+
+      - name: 同步最新 data.json（任务一已提交）
+        run: git pull --ff-only || true
+
+      - name: 准备发布目录
+        run: |
+          mkdir -p _site
+          cp index.html _site/
+          [ -f data.json ] && cp data.json _site/ || echo "warning: 暂无 data.json，页面将提示手动上传"
+          [ -f 使用教程.html ] && cp 使用教程.html _site/ || true
+          [ -f .nojekyll ] && cp .nojekyll _site/ || touch _site/.nojekyll
+          ls -lh _site
+
+      - name: 配置 Pages
+        uses: actions/configure-pages@v5
+
+      - name: 打包站点
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: _site
+
+      - name: 部署到 GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4

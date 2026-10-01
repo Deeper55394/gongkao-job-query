@@ -1,0 +1,8 @@
+﻿# 公考职位查询工具 —— Python 依赖
+# 安装：pip install -r requirements.txt
+
+pandas>=2.0            # 职位表 Excel 解析与清洗
+openpyxl>=3.1          # 读写 .xlsx
+xlrd>=2.0.1            # 解析旧版 .xls（部分年份官方职位表为 .xls）
+requests>=2.31         # HTTP 抓取（缺失时脚本会自动退回标准库 urllib）
+pyyaml>=6.0            # 校验 GitHub Actions 工作流（tools/check_workflow.py）

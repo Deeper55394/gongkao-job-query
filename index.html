@@ -1,0 +1,1090 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<meta name="description" content="国家公务员考试 / 江苏省公务员考试 职位筛选工具（本科·生物科学（师范）·江苏地区）" />
+<title>公考职位查询 · 生物科学（师范）· 江苏</title>
+<style>
+  /* ===================== 基础样式 / 变量 ===================== */
+  :root{
+    --c-bg:#f5f7fa;
+    --c-card:#ffffff;
+    --c-line:#e3e8ef;
+    --c-text:#1f2937;
+    --c-sub:#6b7280;
+    --c-main:#1a56db;
+    --c-main-soft:#e8f0fe;
+    --c-a:#0f9d58;   /* A 完全匹配 */
+    --c-b:#d97706;   /* B 可能匹配 */
+    --c-c:#2563eb;   /* C 不限专业 */
+    --c-d:#6b7280;   /* D 条件不符但相近 */
+    --radius:10px;
+    --shadow:0 1px 3px rgba(16,24,40,.06), 0 1px 2px rgba(16,24,40,.04);
+  }
+  *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+  html,body{margin:0;padding:0}
+  body{
+    background:var(--c-bg);color:var(--c-text);
+    font:14px/1.6 -apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Hiragino Sans GB","Microsoft YaHei",sans-serif;
+    padding-bottom:40px;
+  }
+  a{color:var(--c-main);text-decoration:none}
+  a:hover{text-decoration:underline}
+  button{font-family:inherit;font-size:14px;cursor:pointer}
+  input,select{font-family:inherit}
+
+  /* ===================== 顶部标题栏 ===================== */
+  header.top{
+    background:linear-gradient(135deg,#1a56db,#1e3a8a);
+    color:#fff;padding:16px 16px 14px;
+  }
+  header.top h1{margin:0 0 6px;font-size:18px;font-weight:600;letter-spacing:.3px}
+  header.top .meta{font-size:12px;opacity:.92;display:flex;flex-wrap:wrap;gap:6px 14px}
+  header.top .meta b{font-weight:600}
+  .badge{
+    display:inline-block;padding:1px 8px;border-radius:999px;font-size:11px;line-height:18px;
+    background:rgba(255,255,255,.18);border:1px solid rgba(255,255,255,.35);
+  }
+  .badge.warn{background:#fef3c7;color:#92400e;border-color:#fcd34d}
+
+  /* ===================== 通用容器 / 卡片 ===================== */
+  .wrap{max-width:1500px;margin:0 auto;padding:0 12px}
+  .card{background:var(--c-card);border:1px solid var(--c-line);border-radius:var(--radius);box-shadow:var(--shadow);margin-top:12px;overflow:hidden}
+  .card > .hd{
+    display:flex;align-items:center;justify-content:space-between;gap:8px;
+    padding:10px 14px;border-bottom:1px solid var(--c-line);background:#fafbfc;
+  }
+  .card > .hd h2{margin:0;font-size:14px;font-weight:600}
+  .card > .bd{padding:12px 14px}
+
+  /* ===================== 按钮 ===================== */
+  .btn{
+    border:1px solid var(--c-line);background:#fff;color:var(--c-text);
+    padding:6px 12px;border-radius:8px;transition:.15s;white-space:nowrap;
+  }
+  .btn:hover{border-color:var(--c-main);color:var(--c-main)}
+  .btn.primary{background:var(--c-main);border-color:var(--c-main);color:#fff}
+  .btn.primary:hover{background:#1746b0;color:#fff}
+  .btn-row{display:flex;flex-wrap:wrap;gap:8px}
+  .btn.sm{padding:4px 9px;font-size:12px}
+
+  /* ===================== 数据加载提示条 ===================== */
+  #loadState{padding:10px 14px;font-size:13px;border-radius:var(--radius);margin-top:12px;display:none}
+  #loadState.info{background:#e8f0fe;border:1px solid #c7d8fb;color:#1e3a8a;display:block}
+  #loadState.ok{background:#e7f7ee;border:1px solid #b7e4c7;color:#0b6b3a;display:block}
+  #loadState.warn{background:#fffbeb;border:1px solid #fcd34d;color:#92400e;display:block}
+  #loadState.err{background:#fdeaea;border:1px solid #f5c2c2;color:#9b1c1c;display:block}
+  #loadState code{background:rgba(0,0,0,.06);padding:1px 5px;border-radius:4px}
+
+  /* ===================== 筛选区 ===================== */
+  .filter-group{margin-bottom:12px}
+  .filter-group:last-child{margin-bottom:0}
+  .filter-group > .t{
+    font-size:13px;font-weight:600;color:#374151;margin-bottom:6px;
+    display:flex;align-items:center;gap:6px;flex-wrap:wrap;
+  }
+  .filter-group > .t .hint{font-weight:400;font-size:11px;color:var(--c-sub)}
+  .chips{display:flex;flex-wrap:wrap;gap:8px}
+  .chip{
+    display:inline-flex;align-items:center;gap:6px;
+    border:1px solid var(--c-line);border-radius:999px;padding:5px 12px;
+    background:#fff;font-size:13px;cursor:pointer;user-select:none;transition:.15s;
+  }
+  .chip:hover{border-color:var(--c-main)}
+  .chip input{display:none}
+  .chip.on{background:var(--c-main-soft);border-color:var(--c-main);color:var(--c-main);font-weight:600}
+  .chip .n{font-size:11px;color:var(--c-sub)}
+  .chip.on .n{color:var(--c-main)}
+  .kw{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+  .kw input[type=search]{
+    flex:1 1 220px;min-width:180px;padding:7px 10px;border:1px solid var(--c-line);border-radius:8px;outline:none;
+  }
+  .kw input[type=search]:focus{border-color:var(--c-main)}
+
+  /* ===================== 统计条 ===================== */
+  .stats{display:flex;flex-wrap:wrap;gap:8px;padding:10px 14px;background:#fafbfc;border-bottom:1px solid var(--c-line);font-size:13px}
+  .stat{display:inline-flex;align-items:center;gap:6px;padding:3px 10px;border-radius:999px;background:#fff;border:1px solid var(--c-line)}
+  .stat b{font-weight:700}
+  .stat.a{border-color:#b7e4c7;background:#e7f7ee;color:#0b6b3a}
+  .stat.b{border-color:#fcd34d;background:#fef3c7;color:#92400e}
+  .stat.c{border-color:#c7d8fb;background:#e8f0fe;color:#1e3a8a}
+  .stat.d{border-color:#e3e8ef;background:#f3f4f6;color:#4b5563}
+
+  /* ===================== 表格 ===================== */
+  .table-scroll{overflow:auto;max-height:none}
+  table.jobs{border-collapse:separate;border-spacing:0;width:100%;font-size:12.5px;min-width:2400px}
+  table.jobs th,table.jobs td{
+    border-bottom:1px solid var(--c-line);padding:8px 10px;text-align:left;vertical-align:top;
+  }
+  table.jobs thead th{
+    position:sticky;top:0;z-index:2;background:#f1f5f9;font-weight:600;white-space:nowrap;
+    border-bottom:1px solid #d7dee8;
+  }
+  table.jobs tbody tr:hover{background:#f8fafc}
+  table.jobs td.num{text-align:center;white-space:nowrap}
+  table.jobs td.major{min-width:260px}
+  .tagline{display:flex;flex-wrap:wrap;gap:4px}
+  .tag{display:inline-block;padding:1px 6px;border-radius:5px;background:#eef2f7;color:#475569;font-size:11px;white-space:nowrap}
+  .tag.match{background:#dcfce7;color:#166534}
+  .tag.warn{background:#fef3c7;color:#92400e}
+  .lvl{display:inline-block;padding:2px 8px;border-radius:999px;font-size:11.5px;font-weight:600;white-space:nowrap}
+  .lvl-A{background:#e7f7ee;color:var(--c-a);border:1px solid #b7e4c7}
+  .lvl-B{background:#fef3c7;color:var(--c-b);border:1px solid #fcd34d}
+  .lvl-C{background:#e8f0fe;color:var(--c-c);border:1px solid #c7d8fb}
+  .lvl-D{background:#f3f4f6;color:var(--c-d);border:1px solid #e5e7eb}
+  .callout{display:block;margin-top:4px;font-size:11px;color:#b45309;background:#fffbeb;border:1px dashed #fcd34d;border-radius:6px;padding:3px 6px}
+  .srcline{font-size:11px;word-break:break-all;max-width:220px;display:block}
+  .empty{padding:40px 16px;text-align:center;color:var(--c-sub)}
+
+  /* ===================== 手机端卡片视图 ===================== */
+  .cards{display:none;padding:10px}
+  .job-card{border:1px solid var(--c-line);border-radius:var(--radius);padding:12px;margin-bottom:10px;background:#fff}
+  .job-card .c-hd{display:flex;justify-content:space-between;gap:8px;align-items:flex-start;margin-bottom:6px}
+  .job-card .c-title{font-size:14px;font-weight:600;line-height:1.4}
+  .job-card dl{margin:8px 0 0;display:grid;grid-template-columns:88px 1fr;gap:4px 8px;font-size:12.5px}
+  .job-card dt{color:var(--c-sub);white-space:nowrap}
+  .job-card dd{margin:0;word-break:break-word}
+
+  /* ===================== 响应式 ===================== */
+  @media (max-width:900px){
+    .table-scroll{display:none}
+    .cards{display:block}
+    header.top h1{font-size:16px}
+    .wrap{padding:0 10px}
+  }
+  @media (max-width:520px){
+    .chip{padding:5px 10px;font-size:12.5px}
+    .card > .bd{padding:10px}
+  }
+  details.help{margin-top:12px;font-size:13px}
+  details.help summary{cursor:pointer;color:var(--c-main);font-weight:600}
+  details.help ul{margin:8px 0 0;padding-left:20px;color:#374151}
+  footer.foot{text-align:center;color:var(--c-sub);font-size:12px;margin-top:18px;line-height:1.8}
+  .hide{display:none !important}
+  /* 打印（导出 PDF 备用） */
+  @media print{
+    header.top{background:#1a56db !important;-webkit-print-color-adjust:exact}
+    .card:first-of-type, #loadState, .btn-row, footer.foot{display:none !important}
+  }
+</style>
+</head>
+<body>
+
+<!-- ============ 顶部 ============ -->
+<header class="top">
+  <h1>公考职位查询 · 本科 · 生物科学（师范） · 江苏</h1>
+  <div class="meta">
+    <span>数据最后更新：<b id="lastUpdate">—</b></span>
+    <span>数据来源：<b id="dataSource">—</b></span>
+    <span>职位总数：<b id="dataCount">—</b></span>
+    <span id="sampleBadge" class="badge warn hide">示例数据</span>
+  </div>
+</header>
+
+<div class="wrap">
+
+  <!-- ============ 数据加载状态 / 手动上传 ============ -->
+  <div id="loadState" class="info"></div>
+
+  <!-- ============ 操作按钮 ============ -->
+  <div class="card">
+    <div class="hd">
+      <h2>数据与导出</h2>
+      <span class="badge" style="background:#eef2f7;color:#475569;border-color:#e3e8ef">纯前端 · 数据不上传</span>
+    </div>
+    <div class="bd">
+      <div class="btn-row">
+        <button class="btn primary" id="btnJson">选择 data.json</button>
+        <button class="btn" id="btnExcel">选择职位表（Excel / CSV）</button>
+        <button class="btn" id="btnCsv">导出当前筛选结果 CSV</button>
+        <button class="btn" id="btnReset">重置筛选条件</button>
+        <input type="file" id="fileJson" accept=".json,application/json" class="hide" />
+        <input type="file" id="fileExcel" accept=".xlsx,.xls,.csv,text/csv" class="hide" />
+      </div>
+      <div id="uploadHint" style="margin-top:8px;font-size:12px;color:var(--c-sub)">
+        提示：双击打开本页面时，浏览器出于安全限制通常无法自动读取同目录的 data.json，请点击上方按钮手动选择；
+        或在项目目录执行 <code>python -m http.server 8000</code> 后访问 http://localhost:8000 。
+      </div>
+    </div>
+  </div>
+
+  <!-- ============ 筛选条件 ============ -->
+  <div class="card">
+    <div class="hd">
+      <h2>筛选条件</h2>
+      <button class="btn sm" id="btnFold">收起</button>
+    </div>
+    <div class="bd" id="filterBody">
+
+      <div class="filter-group" data-group="地区">
+        <div class="t">工作地点 <span class="hint">（默认仅看江苏）</span></div>
+        <div class="chips" id="gLoc"></div>
+      </div>
+
+      <div class="filter-group" data-group="学历">
+        <div class="t">学历要求</div>
+        <div class="chips" id="gEdu"></div>
+      </div>
+
+      <div class="filter-group" data-group="专业">
+        <div class="t">专业匹配 <span class="hint">（可多选；不选=不限）</span></div>
+        <div class="chips" id="gMajor"></div>
+      </div>
+
+      <div class="filter-group" data-group="身份">
+        <div class="t">身份 / 报考对象 <span class="hint">（可多选）</span></div>
+        <div class="chips" id="gIdentity"></div>
+      </div>
+
+      <div class="filter-group" data-group="政治">
+        <div class="t">政治面貌 <span class="hint">（可多选）</span></div>
+        <div class="chips" id="gPolitical"></div>
+      </div>
+
+      <div class="filter-group" data-group="基层">
+        <div class="t">基层工作最低年限 <span class="hint">（可多选）</span></div>
+        <div class="chips" id="gExp"></div>
+      </div>
+
+      <div class="filter-group" data-group="其他">
+        <div class="t">其他条件 / 匹配结论</div>
+        <div class="chips" id="gOther"></div>
+      </div>
+
+      <div class="filter-group" data-group="关键词">
+        <div class="t">关键词搜索 <span class="hint">（职位名称 / 招录机关 / 专业原文 / 其他条件）</span></div>
+        <div class="kw">
+          <input type="search" id="kwInput" placeholder="例如：生物 教师 南京 应届" />
+          <button class="btn sm" id="kwClear">清空</button>
+        </div>
+      </div>
+
+    </div>
+  </div>
+
+  <!-- ============ 结果 ============ -->
+  <div class="card">
+    <div class="stats" id="stats"></div>
+
+    <!-- 桌面：横向滚动表格 -->
+    <div class="table-scroll">
+      <table class="jobs">
+        <thead>
+          <tr>
+            <th>考试类型</th><th>年度</th><th>职位代码</th><th>招录机关</th><th>用人司局/单位</th><th>职位名称</th>
+            <th>招录人数</th><th>工作地点</th><th>学历要求</th><th>学位要求</th>
+            <th class="major">专业要求原文</th><th>专业目录归属</th><th>政治面貌</th><th>基层年限</th>
+            <th>身份要求</th><th>户籍/生源</th><th>其他条件</th><th>考试类别</th><th>面试比例</th><th>备注</th>
+            <th>咨询电话</th><th>来源链接</th><th>匹配结论</th>
+          </tr>
+        </thead>
+        <tbody id="tbody"></tbody>
+      </table>
+    </div>
+
+    <!-- 手机：卡片 -->
+    <div class="cards" id="cards"></div>
+  </div>
+
+  <details class="help card">
+    <summary style="padding:12px 14px">使用说明与免责声明（点击展开）</summary>
+    <div class="bd" style="padding-top:0">
+      <ul>
+        <li><b>匹配结论含义</b>：
+          <span class="lvl lvl-A">A 完全匹配</span> 专业目录明确包含「生物科学 / 生物科学类 / 基础理学类」且学历等硬条件无冲突；
+          <span class="lvl lvl-B">B 可能匹配/需核实</span> 属于教育类、或额外要求师范类/教师资格证、或专业表述模糊；
+          <span class="lvl lvl-C">C 不限专业</span> 专业不限，任何专业均可报考；
+          <span class="lvl lvl-D">D 条件不符但相近</span> 专业相近但未明确列入，或学历等硬条件不符，仅供参考。
+        </li>
+        <li><b>「需电话咨询招录单位」</b>：凡毕业证专业名称为「生物科学（师范）」、专业表述含「师范」、或岗位要求师范类/教师资格证的，均标注需电话咨询。
+          各省专业目录对「师范」后缀的认定口径不一致，务必以招录单位答复为准。</li>
+        <li><b>数据来源</b>：全部字段直接取自国家公务员局、江苏先锋网、江苏省人力资源和社会保障厅及各设区市人社局发布的官方职位表 Excel，
+          本工具不生成、不推断任何职位数据。若抓取失败，页面会明确提示并保留上一次的数据。</li>
+        <li><b>免责声明</b>：本工具仅用于辅助筛选，报名条件以官方公告、职位表原件及招录单位答复为准。</li>
+      </ul>
+    </div>
+  </details>
+
+  <footer class="foot">
+    公考职位查询工具 · 纯前端单文件 · 数据来自官方公开职位表<br />
+    报名前请务必核对官方公告与职位表原件
+  </footer>
+</div>
+
+<!-- ============================================================================
+     内置离线数据（由 tools/build_standalone.py 自动用同目录 data.json 同步生成）
+     作用：双击打开本文件时，浏览器禁止 fetch 本地文件，页面会自动使用这里的数据，
+           从而实现「零配置、双击即用」。若存在可读取的 data.json（本地服务 /
+           GitHub Pages / 手动上传），则一律以 data.json 为准。
+     ============================================================================ -->
+<script id="embedded-data" type="application/json">{"meta":{"last_update":"2026-10-01T10:20:56+08:00","last_update_text":"2026-10-01 10:20（北京时间）","last_check":"2026-10-01T10:20:56+08:00","generator":"scraper.py","data_status":"sample","record_count":8,"new_records":3,"updated_records":0,"scope":"jiangsu-biology","exam_types":["国考","江苏省考"],"sources":[{"source_name":"国家公务员局国考专题（示例数据，非真实职位）","exam_type":"国考","file":"示例_国考职位表.xlsx","url":"https://bm.scs.gov.cn/kl2026/","records":3,"fetched_at":"2026-10-01T10:20:56+08:00"}],"warnings":["当前 data.json 为格式示例数据，不是真实职位，请以官方职位表为准"],"disclaimer":"数据来自官方公开职位表，仅供筛选参考；报考条件以官方公告、职位表原件及招录单位答复为准。"},"jobs":[{"考试类型":"江苏省考","年度":2026,"职位代码":"SAMPLE-JS-0002","招录机关":"【示例】苏州市农业技术推广中心","用人司局/单位":"","职位名称":"【示例】农业技术推广岗","招录人数":"1","工作地点":"江苏省苏州市","学历要求":"本科及以上","学位要求":"取得相应学位","专业要求原文":"生物科学类、基础理学类","专业目录归属":["生物科学类","基础理学类"],"政治面貌":"中共党员","基层工作最低年限":"满2年","身份要求":"往届","户籍/生源要求":"限苏州市户籍或生源","其他条件":"无（示例）","考试类别":"B类","面试比例":"3:1","备注":"【示例数据，非真实职位】","咨询电话":"0512-00000000（示例）","落户地点":"","机构性质":"","来源链接":"https://www.jszzb.gov.cn/","来源文件":"示例_江苏省考职位表.xlsx","数据来源":"江苏先锋网（示例数据，非真实职位）","抓取时间":"2026-10-01T10:20:55+08:00","匹配结论":"A","匹配说明":"专业目录明确包含生物科学类、基础理学类","需电话咨询":"否","是否示例":true},{"考试类型":"江苏省考","年度":2026,"职位代码":"SAMPLE-JS-0003","招录机关":"【示例】无锡市市场监督管理局","用人司局/单位":"","职位名称":"【示例】综合管理岗","招录人数":"3","工作地点":"江苏省无锡市","学历要求":"本科及以上","学位要求":"不限","专业要求原文":"不限专业","专业目录归属":["不限专业"],"政治面貌":"不限","基层工作最低年限":"无","身份要求":"应届","户籍/生源要求":"不限","其他条件":"无（示例）","考试类别":"A类","面试比例":"3:1","备注":"【示例数据，非真实职位】","咨询电话":"0510-00000000（示例）","落户地点":"","机构性质":"","来源链接":"https://www.jszzb.gov.cn/","来源文件":"示例_江苏省考职位表.xlsx","数据来源":"江苏先锋网（示例数据，非真实职位）","抓取时间":"2026-10-01T10:20:55+08:00","匹配结论":"C","匹配说明":"专业不限，任何专业均可报考","需电话咨询":"匹配结论非完全匹配","是否示例":true},{"考试类型":"江苏省考","年度":2026,"职位代码":"SAMPLE-JS-0004","招录机关":"【示例】徐州市生态环境局","用人司局/单位":"","职位名称":"【示例】环境监测岗","招录人数":"1","工作地点":"江苏省徐州市","学历要求":"硕士研究生及以上","学位要求":"取得相应学位","专业要求原文":"生物科学、生态学","专业目录归属":["生物科学"],"政治面貌":"不限","基层工作最低年限":"无","身份要求":"应届","户籍/生源要求":"不限","其他条件":"无（示例）","考试类别":"B类","面试比例":"3:1","备注":"【示例数据，非真实职位】仅限研究生学历，本科不可报","咨询电话":"0516-00000000（示例）","落户地点":"","机构性质":"","来源链接":"https://www.jszzb.gov.cn/","来源文件":"示例_江苏省考职位表.xlsx","数据来源":"江苏先锋网（示例数据，非真实职位）","抓取时间":"2026-10-01T10:20:55+08:00","匹配结论":"D","匹配说明":"学历要求为硕士研究生及以上，本科不可报或需进一步确认","需电话咨询":"匹配结论非完全匹配","是否示例":true},{"考试类型":"江苏省考","年度":2026,"职位代码":"SAMPLE-JS-0005","招录机关":"【示例】常州市卫生健康委员会","用人司局/单位":"","职位名称":"【示例】教育管理岗","招录人数":"1","工作地点":"江苏省常州市","学历要求":"本科及以上","学位要求":"取得相应学位","专业要求原文":"教育类、生物科学类","专业目录归属":["生物科学类","教育类"],"政治面貌":"中共党员或共青团员","基层工作最低年限":"满1年","身份要求":"不限","户籍/生源要求":"不限","其他条件":"无（示例）","考试类别":"A类","面试比例":"3:1","备注":"【示例数据，非真实职位】","咨询电话":"0519-00000000（示例）","落户地点":"","机构性质":"","来源链接":"https://www.jszzb.gov.cn/","来源文件":"示例_江苏省考职位表.xlsx","数据来源":"江苏先锋网（示例数据，非真实职位）","抓取时间":"2026-10-01T10:20:55+08:00","匹配结论":"A","匹配说明":"专业目录明确包含生物科学类","需电话咨询":"否","是否示例":true},{"考试类型":"江苏省考","年度":2026,"职位代码":"SAMPLE-JS-0001","招录机关":"【示例】南京市教育局","用人司局/单位":"","职位名称":"【示例】中学生物教师","招录人数":"2","工作地点":"江苏省南京市","学历要求":"本科及以上","学位要求":"取得相应学位","专业要求原文":"生物科学（师范）、生物科学、生物科学类","专业目录归属":["生物科学","生物科学类"],"政治面貌":"不限","基层工作最低年限":"无","身份要求":"不限","户籍/生源要求":"不限","其他条件":"须取得高级中学生物学科教师资格证（示例）","考试类别":"A类","面试比例":"3:1","备注":"【示例数据，非真实职位】毕业证专业名称含「师范」，报考资格请电话咨询招录单位","咨询电话":"025-00000000（示例）","落户地点":"","机构性质":"","来源链接":"https://www.jszzb.gov.cn/","来源文件":"示例_江苏省考职位表.xlsx","数据来源":"江苏先锋网（示例数据，非真实职位）","抓取时间":"2026-10-01T10:20:55+08:00","匹配结论":"B","匹配说明":"专业目录匹配，但岗位额外要求教师资格证","需电话咨询":"毕业证专业名称含「师范」，各省专业目录认定口径不同；岗位要求教师资格证；匹配结论非完全匹配","是否示例":true},{"考试类型":"国考","年度":2026,"职位代码":"SAMPLE-GK-300110002002","招录机关":"【示例】江苏海事局（国考职位）","用人司局/单位":"【示例】苏州海事局","职位名称":"【示例】基层综合管理岗","招录人数":"1","工作地点":"江苏省苏州市","学历要求":"本科及以上","学位要求":"不限","专业要求原文":"不限专业","专业目录归属":["不限专业"],"政治面貌":"中共党员","基层工作最低年限":"二年","身份要求":"不限","户籍/生源要求":"不限","其他条件":"","考试类别":"","面试比例":"3:1","备注":"【示例数据，非真实职位】","咨询电话":"0512-00000000（示例）","落户地点":"江苏省苏州市","机构性质":"中央国家行政机关直属机构","来源链接":"https://bm.scs.gov.cn/kl2026/","来源文件":"示例_国考职位表.xlsx","数据来源":"国家公务员局国考专题（示例数据，非真实职位）","抓取时间":"2026-10-01T10:20:56+08:00","匹配结论":"C","匹配说明":"专业不限，任何专业均可报考","需电话咨询":"匹配结论非完全匹配","是否示例":true},{"考试类型":"国考","年度":2026,"职位代码":"SAMPLE-GK-300110001001","招录机关":"【示例】江苏出入境检验检疫局（国考职位）","用人司局/单位":"【示例】南京分局","职位名称":"【示例】动植物检疫监管岗","招录人数":"2","工作地点":"江苏省南京市","学历要求":"本科及以上","学位要求":"与最高学历相对应的学位","专业要求原文":"生物科学、生物科学类","专业目录归属":["生物科学","生物科学类"],"政治面貌":"不限","基层工作最低年限":"无限制","身份要求":"应届","户籍/生源要求":"不限","其他条件":"","考试类别":"","面试比例":"3:1","备注":"【示例数据，非真实职位】限应届高校毕业生报考","咨询电话":"025-00000000（示例）","落户地点":"江苏省南京市","机构性质":"中央国家行政机关直属机构","来源链接":"https://bm.scs.gov.cn/kl2026/","来源文件":"示例_国考职位表.xlsx","数据来源":"国家公务员局国考专题（示例数据，非真实职位）","抓取时间":"2026-10-01T10:20:56+08:00","匹配结论":"A","匹配说明":"专业目录明确包含生物科学","需电话咨询":"否","是否示例":true},{"考试类型":"国考","年度":2026,"职位代码":"SAMPLE-GK-300110003003","招录机关":"【示例】国家税务总局江苏省税务局（国考职位）","用人司局/单位":"【示例】南通市税务局","职位名称":"【示例】一级行政执法员","招录人数":"4","工作地点":"江苏省南通市","学历要求":"本科及以上","学位要求":"与最高学历相对应的学位","专业要求原文":"基础理学类、生物科学类、统计学类","专业目录归属":["生物科学类","基础理学类"],"政治面貌":"不限","基层工作最低年限":"无限制","身份要求":"应届","户籍/生源要求":"不限","其他条件":"","考试类别":"","面试比例":"3:1","备注":"【示例数据，非真实职位】2026年应届高校毕业生","咨询电话":"0513-00000000（示例）","落户地点":"江苏省南通市","机构性质":"中央国家行政机关直属机构","来源链接":"https://bm.scs.gov.cn/kl2026/","来源文件":"示例_国考职位表.xlsx","数据来源":"国家公务员局国考专题（示例数据，非真实职位）","抓取时间":"2026-10-01T10:20:56+08:00","匹配结论":"A","匹配说明":"专业目录明确包含生物科学类、基础理学类","需电话咨询":"否","是否示例":true}]}</script>
+
+<script>
+/* =========================================================================
+ * 公考职位查询工具（单文件前端）
+ *  - 数据来源：同目录 data.json（可 fetch）或用户手动上传 data.json / Excel / CSV
+ *  - 无任何后端、无任何数据外传
+ * ========================================================================= */
+
+/* ------------------------------------------------------------------ *
+ * 0. 常量定义
+ * ------------------------------------------------------------------ */
+
+// 江苏 13 个设区市（用于"工作地点=江苏"判定；国考职位表工作地点多为市名）
+const JIANGSU_CITIES = ['南京','无锡','徐州','常州','苏州','南通','连云港','淮安','盐城','扬州','镇江','泰州','宿迁'];
+
+// 专业目录归属标签（与 scraper.py 保持一致）
+const MAJOR_TAGS = ['生物科学','生物科学类','基础理学类','教育类','不限专业','相近专业'];
+
+// 表格 / CSV 输出字段（顺序与需求一致）
+const COLUMNS = ['考试类型','年度','职位代码','招录机关','用人司局/单位','职位名称','招录人数','工作地点',
+  '学历要求','学位要求','专业要求原文','专业目录归属','政治面貌','基层工作最低年限','身份要求','户籍/生源要求',
+  '其他条件','考试类别','面试比例','备注','咨询电话','来源链接','匹配结论','匹配说明','需电话咨询'];
+
+/* ------------------------------------------------------------------ *
+ * 1. 全局状态
+ * ------------------------------------------------------------------ */
+const state = {
+  jobs: [],            // 全部职位
+  filtered: [],        // 当前筛选结果
+  meta: {},            // data.json 中的 meta
+  filters: {           // 各筛选组的已选项（空数组 = 该组不限制）
+    地区: ['江苏'],     // 默认勾选江苏
+    学历: ['本科'],
+    专业: ['生物科学','生物科学类','基础理学类','教育类','不限专业'],
+    身份: [],
+    政治: [],
+    基层: [],
+    其他: [],
+    关键词: []
+  },
+  renderLimit: 500     // 单次最多渲染条数（防止手机卡顿）
+};
+
+/* ------------------------------------------------------------------ *
+ * 2. 工具函数
+ * ------------------------------------------------------------------ */
+
+/** 安全读取字段并转字符串 */
+function f(job, key){
+  const v = job ? job[key] : '';
+  if (v === null || v === undefined) return '';
+  if (Array.isArray(v)) return v.join('、');
+  return String(v).trim();
+}
+
+/** 是否命中江苏（工作地点或招录机关中出现江苏/设区市名） */
+function isJiangsu(job){
+  const text = f(job,'工作地点') + ' ' + f(job,'招录机关') + ' ' + f(job,'用人司局/单位');
+  if (/江苏/.test(text)) return true;
+  return JIANGSU_CITIES.some(c => text.includes(c));
+}
+
+/** 把学历要求归一化为可比档位 */
+function eduLevel(text){
+  const t = String(text || '');
+  if (/不限/.test(t)) return 'any';
+  if (/博士/.test(t)) return 'phd';
+  if (/硕士|研究生/.test(t) && !/本科/.test(t)) return 'master';
+  if (/本科/.test(t)) return 'bachelor';
+  if (/大专|专科/.test(t)) return 'college';
+  return 'unknown';
+}
+
+/** 该学历要求是否允许本科报考 */
+function bachelorOK(text){
+  const lv = eduLevel(text);
+  return lv === 'any' || lv === 'bachelor' || lv === 'college' || lv === 'unknown';
+}
+
+/** 身份判定 */
+function identityTag(job){
+  const t = f(job,'身份要求') + ' ' + f(job,'其他条件') + ' ' + f(job,'备注');
+  if (/不限/.test(t)) return '不限';
+  if (/应届/.test(t) && !/择业/.test(t)) return '应届';
+  if (/择业期/.test(t)) return '择业期';
+  if (/往届|社会人员|在职/.test(t)) return '往届';
+  return '不限';
+}
+
+/** 基层经历档位 */
+function expTag(job){
+  const t = f(job,'基层工作最低年限') || f(job,'基层年限') || '';
+  if (/三年|3年/.test(t)) return '满3年';
+  if (/两年|2年/.test(t)) return '满2年';
+  if (/一年|1年/.test(t)) return '满1年';
+  if (/无|不限|0/.test(t)) return '无';
+  return '无';
+}
+
+/** 政治面貌（返回数组，兼容"中共党员或共青团员"） */
+function politicalTags(job){
+  const t = f(job,'政治面貌');
+  const arr = [];
+  if (/不限/.test(t)) return ['不限'];
+  if (/中共党员|党员/.test(t)) arr.push('中共党员');
+  if (/共青团员|团员/.test(t)) arr.push('共青团员');
+  if (/群众/.test(t)) arr.push('群众');
+  return arr.length ? arr : ['不限'];
+}
+
+/** 从职位中读取专业标签（优先用 data.json 的"专业目录归属"，否则按原文推断） */
+function majorTags(job){
+  let tags = job && Array.isArray(job['专业目录归属']) ? job['专业目录归属'].slice() : [];
+  if (typeof job['专业目录归属'] === 'string' && job['专业目录归属']) {
+    tags = job['专业目录归属'].split(/[、,，;；\/]/).map(s => s.trim()).filter(Boolean);
+  }
+  if (tags.length) return tags;
+  return inferMajorTags(f(job,'专业要求原文'));
+}
+
+/** 按专业要求原文推断标签（与 Python 端规则一致） */
+function inferMajorTags(text){
+  const t = String(text || '');
+  const tags = [];
+  if (/不限专业|专业不限|不作专业限制/.test(t)) return ['不限专业'];
+  if (/生物科学[（(]\s*师范\s*[）)]|生物科学\(师范\)/.test(t)) tags.push('生物科学');
+  if (/生物科学类/.test(t)) tags.push('生物科学类');
+  if (/基础理学类|理学类/.test(t)) tags.push('基础理学类');
+  if (/(^|[、,，;；\s（(])生物科学([、,，;；\s）)]|$)/.test(t)) tags.push('生物科学');
+  if (/教育类|教育学类|学科教学/.test(t)) tags.push('教育类');
+  if (/生物/.test(t) && !tags.includes('生物科学') && !tags.includes('生物科学类')) tags.push('相近专业');
+  return [...new Set(tags)];
+}
+
+/** 是否要求教师资格证 / 师范类 */
+function requiresTeacherCert(job){
+  const t = [f(job,'其他条件'), f(job,'备注'), f(job,'专业要求原文')].join(' ');
+  return /教师资格|教师资格证|持有.*教师证/.test(t);
+}
+function requiresNormalMajor(job){
+  const t = [f(job,'其他条件'), f(job,'备注'), f(job,'专业要求原文')].join(' ');
+  return /师范类|师范专业|须为师范|限师范/.test(t);
+}
+
+/* ------------------------------------------------------------------ *
+ * 3. 匹配结论计算（规则与 scraper.py 完全一致）
+ *    A 完全匹配 / B 可能匹配需核实 / C 不限专业 / D 条件不符但相近
+ * ------------------------------------------------------------------ */
+const _clsCache = new WeakMap();   // 缓存匹配结论，避免大数据量下重复计算
+function classify(job){
+  if (job && typeof job === 'object'){
+    const hit = _clsCache.get(job);
+    if (hit) return hit;
+    const r = _classify(job);
+    _clsCache.set(job, r);
+    return r;
+  }
+  return _classify(job);
+}
+
+function _classify(job){
+  const majorText = f(job,'专业要求原文');
+  const tags = majorTags(job);
+  const reasons = [];
+  const needCert = requiresTeacherCert(job);
+  const needNormal = requiresNormalMajor(job);
+  const needCallText = /师范/.test(majorText);
+
+  let level;
+
+  if (!bachelorOK(f(job,'学历要求'))) {
+    // 学历硬门槛不符（例如"仅限硕士研究生"）
+    level = 'D';
+    reasons.push('学历要求为' + f(job,'学历要求') + '，本科不可报或需进一步确认');
+  } else if (tags.includes('不限专业')) {
+    level = 'C';
+    reasons.push('专业不限，任何专业均可报考');
+  } else {
+    const exact = tags.includes('生物科学');
+    const broad = tags.includes('生物科学类') || tags.includes('基础理学类');
+    const eduCls = tags.includes('教育类');
+    if (exact || broad) {
+      if (needNormal || needCert) {
+        level = 'B';
+        reasons.push('专业目录匹配，但岗位额外要求' + (needNormal ? '师范类' : '') + (needNormal && needCert ? '且' : '') + (needCert ? '教师资格证' : ''));
+      } else {
+        level = 'A';
+        reasons.push('专业目录明确包含' + (exact ? '生物科学' : tags.filter(t => t === '生物科学类' || t === '基础理学类').join('、')));
+      }
+    } else if (eduCls) {
+      level = 'B';
+      reasons.push('属于教育类/师范方向，需核对本科专业是否被认定为教育类');
+    } else {
+      level = 'D';
+      reasons.push('专业要求未明确包含生物科学相关目录，仅条件相近，需电话核实');
+    }
+  }
+
+  // 是否需电话咨询招录单位
+  const needCallList = [];
+  if (needCallText) needCallList.push('毕业证专业名称含「师范」，各省专业目录认定口径不同');
+  if (needNormal) needCallList.push('岗位要求师范类');
+  if (needCert) needCallList.push('岗位要求教师资格证');
+  if (level !== 'A') needCallList.push('匹配结论非完全匹配');
+  const needCall = needCallList.length > 0;
+
+  return { level, reason: reasons.join('；'), needCall: needCall, needCallList: needCallList.join('；') };
+}
+
+/* ------------------------------------------------------------------ *
+ * 4. 筛选逻辑
+ * ------------------------------------------------------------------ */
+function passFilters(job){
+  const F = state.filters;
+
+  // 4.1 地区
+  if (F.地区.length && !isJiangsu(job)) return false;
+
+  // 4.2 学历
+  if (F.学历.length) {
+    const lv = eduLevel(f(job,'学历要求'));
+    if (F.学历.includes('本科') && !bachelorOK(f(job,'学历要求'))) return false;
+    if (F.学历.includes('硕士研究生及以上') && !(lv === 'master' || lv === 'phd' || lv === 'any')) return false;
+    if (F.学历.includes('大专及以上') && !(lv === 'college' || lv === 'bachelor' || lv === 'any' || lv === 'master' || lv === 'phd')) return false;
+  }
+
+  // 4.3 专业标签
+  if (F.专业.length) {
+    const tags = majorTags(job);
+    if (!tags.some(t => F.专业.includes(t))) return false;
+  }
+
+  // 4.4 身份
+  if (F.身份.length) {
+    const idt = identityTag(job);
+    if (!(F.身份.includes(idt) || idt === '不限')) return false;
+  }
+
+  // 4.5 政治面貌
+  if (F.政治.length) {
+    const pol = politicalTags(job);
+    if (!(pol.includes('不限') || pol.some(p => F.政治.includes(p)))) return false;
+  }
+
+  // 4.6 基层经历
+  if (F.基层.length) {
+    const e = expTag(job);
+    if (!(F.基层.includes(e) || e === '无' && F.基层.includes('无'))) return false;
+  }
+
+  // 4.7 其他（教师资格证 / 师范类 / 结论 / 需电话咨询）
+  if (F.其他.length) {
+    const cls = classify(job);
+    const needCert = requiresTeacherCert(job);
+    const needNormal = requiresNormalMajor(job);
+    for (const o of F.其他) {
+      if (o === '要求教师资格证' && !needCert) return false;
+      if (o === '要求师范类' && !needNormal) return false;
+      if (o === '不要求教师资格证' && needCert) return false;
+      if (o === '不需电话咨询' && cls.needCall) return false;
+      if (['A 完全匹配','B 可能匹配','C 不限专业','D 条件不符但相近'].includes(o) && !o.startsWith(cls.level)) return false;
+    }
+  }
+
+  // 4.8 关键词
+  if (F.关键词.length) {
+    const hay = [f(job,'职位名称'),f(job,'招录机关'),f(job,'用人司局/单位'),f(job,'专业要求原文'),
+      f(job,'其他条件'),f(job,'备注'),f(job,'工作地点'),f(job,'身份要求')].join(' ').toLowerCase();
+    const kws = Array.isArray(F.关键词) ? F.关键词 : String(F.关键词).split(/\s+/);
+    if (!kws.every(k => !k || hay.includes(String(k).toLowerCase()))) return false;
+  }
+
+  return true;
+}
+
+/* ------------------------------------------------------------------ *
+ * 5. 筛选控件渲染
+ * ------------------------------------------------------------------ */
+const FILTER_DEFS = [
+  { key:'地区', el:'gLoc',       options:['江苏','其他地区'] },
+  { key:'学历', el:'gEdu',       options:['本科','硕士研究生及以上','大专及以上'] },
+  { key:'专业', el:'gMajor',     options:['生物科学','生物科学类','基础理学类','教育类','不限专业','相近专业'] },
+  { key:'身份', el:'gIdentity',  options:['应届','择业期','往届','不限'] },
+  { key:'政治', el:'gPolitical', options:['中共党员','共青团员','群众','不限'] },
+  { key:'基层', el:'gExp',       options:['无','满1年','满2年','满3年'] },
+  { key:'其他', el:'gOther',     options:['要求教师资格证','不要求教师资格证','要求师范类','A 完全匹配','B 可能匹配','C 不限专业','D 条件不符但相近','不需电话咨询'] }
+];
+
+/** 统计每个选项在"其他条件都满足、仅本组不限制"情况下可命中的条数 */
+function countFor(key, option){
+  const saved = state.filters[key];
+  state.filters[key] = [];
+  const base = state.jobs.filter(passFilters);
+  state.filters[key] = saved;
+  let n;
+  if (key === '关键词') { n = base.length; }
+  else {
+    state.filters[key] = [option];
+    n = base.filter(passFilters).length;
+    state.filters[key] = saved;
+  }
+  return n;
+}
+
+function renderFilters(withCounts){
+  // 数据量过大时跳过"预计命中数"统计，保证界面流畅
+  const showCount = (withCounts !== false) && state.jobs.length > 0 && state.jobs.length <= 8000;
+  FILTER_DEFS.forEach(def => {
+    const box = document.getElementById(def.el);
+    box.innerHTML = '';
+    def.options.forEach(opt => {
+      const on = state.filters[def.key].includes(opt);
+      const chip = document.createElement('label');
+      chip.className = 'chip' + (on ? ' on' : '');
+      const cnt = showCount ? countFor(def.key, opt) : '—';
+      chip.innerHTML = '<input type="checkbox" ' + (on ? 'checked' : '') + ' /><span>' + opt + '</span><span class="n">' + cnt + '</span>';
+      chip.addEventListener('click', e => {
+        e.preventDefault();
+        const arr = state.filters[def.key];
+        const i = arr.indexOf(opt);
+        if (i >= 0) arr.splice(i,1); else arr.push(opt);
+        // 「不限」与其他互斥
+        if (opt === '不限' && arr.includes('不限')) state.filters[def.key] = ['不限'];
+        else if (def.key !== '其他' && def.key !== '专业' && def.key !== '基层') {
+          const j = state.filters[def.key].indexOf('不限');
+          if (j >= 0 && state.filters[def.key].length > 1) state.filters[def.key].splice(j,1);
+        }
+        renderFilters(); applyAndRender();
+      });
+      box.appendChild(chip);
+    });
+  });
+}
+
+/* ------------------------------------------------------------------ *
+ * 6. 结果渲染
+ * ------------------------------------------------------------------ */
+function applyAndRender(){
+  state.filtered = state.jobs.filter(passFilters);
+  renderStats();
+  renderTable();
+  renderCards();
+}
+
+function renderStats(){
+  const counts = {A:0,B:0,C:0,D:0};
+  state.filtered.forEach(j => { const c = classify(j); counts[c.level]++; });
+  document.getElementById('stats').innerHTML =
+    '<span class="stat">命中 <b>' + state.filtered.length + '</b> / 共 ' + state.jobs.length + ' 条</span>' +
+    '<span class="stat a">A 完全匹配 <b>' + counts.A + '</b></span>' +
+    '<span class="stat b">B 可能匹配 <b>' + counts.B + '</b></span>' +
+    '<span class="stat c">C 不限专业 <b>' + counts.C + '</b></span>' +
+    '<span class="stat d">D 相近/不符 <b>' + counts.D + '</b></span>' +
+    (state.filtered.length > state.renderLimit ? '<span class="stat" style="color:#b45309">为保证流畅，仅渲染前 ' + state.renderLimit + ' 条，导出 CSV 不受限制</span>' : '');
+}
+
+function levelHTML(cls){
+  const map = {A:'A 完全匹配',B:'B 可能匹配',C:'C 不限专业',D:'D 条件不符但相近'};
+  return '<span class="lvl lvl-' + cls.level + '" title="' + escapeAttr(cls.reason) + '">' + map[cls.level] + '</span>' +
+    (cls.needCall ? '<span class="callout">⚠ 需电话咨询招录单位</span>' : '');
+}
+
+function linkHTML(url){
+  if (!url) return '<span style="color:#9ca3af">—</span>';
+  const short = String(url).length > 46 ? String(url).slice(0,44) + '…' : url;
+  return '<a class="srcline" href="' + escapeAttr(url) + '" target="_blank" rel="noopener noreferrer">' + escapeHtml(short) + '</a>';
+}
+
+function tagHTML(list){
+  if (!list || !list.length) return '<span style="color:#9ca3af">—</span>';
+  return '<span class="tagline">' + list.map(t => '<span class="tag' + (t === '生物科学' || t === '生物科学类' || t === '基础理学类' ? ' match' : '') + '">' + escapeHtml(t) + '</span>').join('') + '</span>';
+}
+
+function renderTable(){
+  const tbody = document.getElementById('tbody');
+  const rows = state.filtered.slice(0, state.renderLimit);
+  if (!rows.length){
+    tbody.innerHTML = '<tr><td colspan="23"><div class="empty">没有符合条件的职位<br />可尝试放宽筛选条件，或检查是否已成功加载 data.json</div></td></tr>';
+    return;
+  }
+  tbody.innerHTML = rows.map(job => {
+    const cls = classify(job);
+    return '<tr>' +
+      '<td>' + escapeHtml(f(job,'考试类型')) + '</td>' +
+      '<td class="num">' + escapeHtml(f(job,'年度')) + '</td>' +
+      '<td>' + escapeHtml(f(job,'职位代码')) + '</td>' +
+      '<td>' + escapeHtml(f(job,'招录机关')) + '</td>' +
+      '<td>' + escapeHtml(f(job,'用人司局/单位')) + '</td>' +
+      '<td>' + escapeHtml(f(job,'职位名称')) + '</td>' +
+      '<td class="num">' + escapeHtml(f(job,'招录人数')) + '</td>' +
+      '<td>' + escapeHtml(f(job,'工作地点')) + '</td>' +
+      '<td>' + escapeHtml(f(job,'学历要求')) + '</td>' +
+      '<td>' + escapeHtml(f(job,'学位要求')) + '</td>' +
+      '<td class="major">' + escapeHtml(f(job,'专业要求原文')) + '</td>' +
+      '<td>' + tagHTML(majorTags(job)) + '</td>' +
+      '<td>' + escapeHtml(f(job,'政治面貌')) + '</td>' +
+      '<td>' + escapeHtml(f(job,'基层工作最低年限')) + '</td>' +
+      '<td>' + escapeHtml(f(job,'身份要求')) + '</td>' +
+      '<td>' + escapeHtml(f(job,'户籍/生源要求')) + '</td>' +
+      '<td>' + escapeHtml(f(job,'其他条件')) + '</td>' +
+      '<td>' + escapeHtml(f(job,'考试类别')) + '</td>' +
+      '<td>' + escapeHtml(f(job,'面试比例')) + '</td>' +
+      '<td>' + escapeHtml(f(job,'备注')) + '</td>' +
+      '<td>' + escapeHtml(f(job,'咨询电话')) + '</td>' +
+      '<td>' + linkHTML(f(job,'来源链接')) + '</td>' +
+      '<td>' + levelHTML(cls) + '</td>' +
+    '</tr>';
+  }).join('');
+}
+
+function renderCards(){
+  const box = document.getElementById('cards');
+  const rows = state.filtered.slice(0, state.renderLimit);
+  if (!rows.length){ box.innerHTML = '<div class="empty">没有符合条件的职位</div>'; return; }
+  box.innerHTML = rows.map(job => {
+    const cls = classify(job);
+    const d = (label, val) => '<dt>' + label + '</dt><dd>' + (val || '—') + '</dd>';
+    return '<div class="job-card">' +
+      '<div class="c-hd"><div class="c-title">' + escapeHtml(f(job,'职位名称') || '（未命名职位）') + '</div>' + levelHTML(cls) + '</div>' +
+      '<div style="font-size:12px;color:#6b7280">' + escapeHtml(f(job,'招录机关')) + (f(job,'用人司局/单位') ? ' · ' + escapeHtml(f(job,'用人司局/单位')) : '') + '</div>' +
+      '<dl>' +
+      d('考试类型', escapeHtml(f(job,'考试类型')) + ' ' + escapeHtml(f(job,'年度'))) +
+      d('职位代码', escapeHtml(f(job,'职位代码'))) +
+      d('招录人数', escapeHtml(f(job,'招录人数'))) +
+      d('工作地点', escapeHtml(f(job,'工作地点'))) +
+      d('学历/学位', escapeHtml(f(job,'学历要求')) + ' / ' + escapeHtml(f(job,'学位要求'))) +
+      d('专业原文', '<b>' + escapeHtml(f(job,'专业要求原文')) + '</b>') +
+      d('目录归属', tagHTML(majorTags(job))) +
+      d('政治面貌', escapeHtml(f(job,'政治面貌'))) +
+      d('基层年限', escapeHtml(f(job,'基层工作最低年限'))) +
+      d('身份要求', escapeHtml(f(job,'身份要求'))) +
+      d('户籍/生源', escapeHtml(f(job,'户籍/生源要求'))) +
+      d('其他条件', escapeHtml(f(job,'其他条件'))) +
+      d('考试类别', escapeHtml(f(job,'考试类别'))) +
+      d('面试比例', escapeHtml(f(job,'面试比例'))) +
+      d('备注', escapeHtml(f(job,'备注'))) +
+      d('咨询电话', escapeHtml(f(job,'咨询电话'))) +
+      d('来源链接', linkHTML(f(job,'来源链接'))) +
+      d('匹配说明', escapeHtml(cls.reason)) +
+      (cls.needCall ? d('提醒', '<span style="color:#b45309">⚠ 需电话咨询招录单位：' + escapeHtml(cls.needCallList) + '</span>') : '') +
+      '</dl></div>';
+  }).join('');
+}
+
+/* ------------------------------------------------------------------ *
+ * 7. 数据加载
+ * ------------------------------------------------------------------ */
+
+/** 解析 data.json 载荷：兼容 [ ... ] 数组 与 { meta, jobs:[...] } 两种格式 */
+function parsePayload(payload, sourceName){
+  let jobs = [], meta = {};
+  if (Array.isArray(payload)) { jobs = payload; meta = {}; }
+  else if (payload && typeof payload === 'object') {
+    jobs = payload.jobs || payload.data || payload.positions || payload.职位列表 || [];
+    meta = payload.meta || payload.元数据 || {};
+  }
+  if (!Array.isArray(jobs)) throw new Error('数据格式无法识别：期望数组或 { meta, jobs:[...] }');
+  // 兼容纯数组格式：从记录中推断更新时间
+  if (!meta.last_update && jobs.length) {
+    const t = jobs.map(j => j['抓取时间']).filter(Boolean).sort().pop();
+    if (t) { meta.last_update = t; meta.from_record = true; }
+  }
+  return { jobs, meta, sourceName };
+}
+
+function setLoadState(kind, html){
+  const el = document.getElementById('loadState');
+  el.className = kind;
+  el.innerHTML = html;
+}
+
+function applyDataset(ds){
+  state.jobs = ds.jobs;
+  state.meta = ds.meta || {};
+  const lu = state.meta.last_update_text || state.meta.last_update || '未知';
+  document.getElementById('lastUpdate').textContent = lu;
+  document.getElementById('dataCount').textContent = state.jobs.length + ' 条';
+  document.getElementById('dataSource').textContent = state.meta.source_name || ds.sourceName || '未知';
+
+  const isSample = state.meta.data_status === 'sample' ||
+                   /示例|样例/.test(String(state.meta.data_status || '')) ||
+                   state.jobs.every(j => j['是否示例']);
+  document.getElementById('sampleBadge').classList.toggle('hide', !isSample);
+
+  setLoadState('ok',
+    '✅ 已加载 <b>' + state.jobs.length + '</b> 条职位数据 · 更新时间 ' + escapeHtml(lu) +
+    ' · 来源：' + escapeHtml(ds.sourceName || state.meta.source_name || '未知') +
+    (isSample ? ' · <b style="color:#b45309">当前为示例数据（非真实职位），请以官方职位表为准</b>' : '') +
+    ((state.meta.warnings && state.meta.warnings.length)
+      ? '<br />⚠ 抓取提示：' + escapeHtml(state.meta.warnings.join(' | ')) : ''));
+
+  renderFilters();
+  applyAndRender();
+}
+
+/** 自动读取同目录 data.json；失败时退回"页面内置数据"，保证双击打开即可直接用 */
+async function autoLoad(){
+  setLoadState('info','⏳ 正在尝试读取同目录 <code>data.json</code> …');
+  try {
+    const res = await fetch('data.json', { cache:'no-store' });
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    const text = await res.text();
+    const payload = JSON.parse(text);
+    applyDataset(parsePayload(payload, 'data.json（同目录 · 自动读取）'));
+  } catch (err) {
+    // —— 兜底 1：使用页面内置的离线数据（由 tools/build_standalone.py 同步 data.json 生成）——
+    const emb = document.getElementById('embedded-data');
+    if (emb && emb.textContent && emb.textContent.trim() && emb.textContent.trim() !== 'null') {
+      try {
+        const ds = parsePayload(JSON.parse(emb.textContent), '页面内置数据（离线版）');
+        applyDataset(ds);
+        setLoadState('warn',
+          'ℹ️ 未能自动读取同目录 <code>data.json</code>（原因：' + escapeHtml(err.message) + '），' +
+          '已自动载入 <b>页面内置数据</b>：' + ds.jobs.length + ' 条。<br />' +
+          '这是浏览器对 <code>file://</code> 的安全限制，属正常现象，不影响使用。<br />' +
+          '<b>想用最新数据：</b>① 点上方「选择 data.json」手动载入；' +
+          '② 双击项目里的 <code>启动.bat</code>（本地服务方式，可自动读取）；' +
+          '③ 部署到 GitHub Pages 后自动读取。');
+        return;
+      } catch (e) { /* 内置数据异常，继续走下面的错误提示 */ }
+    }
+    // —— 兜底 2：给出明确原因和三种解决方案 ——
+    setLoadState('err',
+      '⚠️ 未能自动读取 <code>data.json</code>（原因：' + escapeHtml(err.message) + '）。<br />' +
+      '如果你是通过 <code>file://</code> 双击打开本页面，浏览器会禁止读取本地文件，这是正常的安全限制。<br />' +
+      '<b>解决办法：</b>① 点击上方「选择 data.json」手动载入；② 或点击「选择职位表（Excel / CSV）」直接解析官方职位表；' +
+      '③ 或双击 <code>启动.bat</code>（等价于 <code>python -m http.server 8000</code>）后访问 http://localhost:8000 。');
+  }
+}
+
+/* ------------------------------------------------------------------ *
+ * 8. 手动上传：JSON / CSV / Excel
+ * ------------------------------------------------------------------ */
+document.getElementById('btnJson').onclick = () => document.getElementById('fileJson').click();
+document.getElementById('btnExcel').onclick = () => document.getElementById('fileExcel').click();
+
+document.getElementById('fileJson').addEventListener('change', async e => {
+  const file = e.target.files[0]; if (!file) return;
+  try {
+    const payload = JSON.parse(await file.text());
+    applyDataset(parsePayload(payload, file.name));
+  } catch (err) {
+    setLoadState('err','❌ 解析 ' + escapeHtml(file.name) + ' 失败：' + escapeHtml(err.message));
+  }
+  e.target.value = '';
+});
+
+document.getElementById('fileExcel').addEventListener('change', async e => {
+  const file = e.target.files[0]; if (!file) return;
+  const name = file.name.toLowerCase();
+  try {
+    let rows;
+    if (name.endsWith('.csv')) {
+      rows = parseCSV(await file.text());           // CSV 无需任何外部库
+    } else {
+      await ensureSheetJS();                        // Excel 需要 SheetJS
+      rows = await parseExcel(file);
+    }
+    const jobs = rowsToJobs(rows);
+    if (!jobs.length) throw new Error('未解析到任何职位数据，请确认上传的是官方职位表（表头需包含"职位名称/招录机关"等列）');
+    applyDataset({ jobs, meta: {
+      last_update: new Date().toISOString(),
+      last_update_text: new Date().toLocaleString('zh-CN', { hour12:false }),
+      source_name: '本地导入：' + file.name,
+      data_status: 'local-import',
+      warnings: ['本数据由浏览器本地解析，仅做字段映射，未经过 scraper.py 清洗，匹配结论可能不准确']
+    }, sourceName: '本地导入：' + file.name });
+  } catch (err) {
+    setLoadState('err','❌ 解析 ' + escapeHtml(file.name) + ' 失败：' + escapeHtml(err.message));
+  }
+  e.target.value = '';
+});
+
+/** 动态加载 SheetJS：优先同目录本地文件，其次 CDN */
+function ensureSheetJS(){
+  if (window.XLSX) return Promise.resolve();
+  const sources = ['xlsx.full.min.js',
+    'https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js',
+    'https://unpkg.com/xlsx@0.18.5/dist/xlsx.full.min.js'];
+  return sources.reduce((p, src) => p.catch(() => loadScript(src)), Promise.reject())
+    .then(() => {
+      if (!window.XLSX) throw new Error('SheetJS 加载失败，请联网后重试，或将 Excel 另存为 CSV 再上传');
+    });
+}
+function loadScript(src){
+  return new Promise((resolve, reject) => {
+    const s = document.createElement('script');
+    s.src = src; s.onload = resolve; s.onerror = () => reject(new Error('load fail ' + src));
+    document.head.appendChild(s);
+  });
+}
+
+async function parseExcel(file){
+  const buf = await file.arrayBuffer();
+  const wb = XLSX.read(buf, { type:'array', cellDates:false });
+  const out = [];
+  wb.SheetNames.forEach(sn => {
+    // sheet_to_json 带表头行，得到对象数组
+    const json = XLSX.utils.sheet_to_json(wb.Sheets[sn], { defval:'', raw:false });
+    json.forEach(r => out.push(r));
+  });
+  return out;
+}
+
+/** 极简 CSV 解析（支持引号包裹、转义双引号、BOM） */
+function parseCSV(text){
+  text = text.replace(/^\uFEFF/, '');
+  const rows = []; let row = []; let cur = ''; let q = false;
+  for (let i = 0; i < text.length; i++){
+    const c = text[i];
+    if (q){
+      if (c === '"'){ if (text[i+1] === '"'){ cur += '"'; i++; } else q = false; }
+      else cur += c;
+    } else {
+      if (c === '"') q = true;
+      else if (c === ','){ row.push(cur); cur = ''; }
+      else if (c === '\n'){ row.push(cur); rows.push(row); row = []; cur = ''; }
+      else if (c === '\r'){ /* 忽略 */ }
+      else cur += c;
+    }
+  }
+  if (cur !== '' || row.length){ row.push(cur); rows.push(row); }
+  if (!rows.length) return [];
+  const head = rows.shift().map(h => String(h).trim());
+  return rows.filter(r => r.some(v => String(v).trim() !== ''))
+             .map(r => { const o = {}; head.forEach((h,i) => o[h] = r[i] === undefined ? '' : r[i]); return o; });
+}
+
+/** 把任意表头的中文职位表行映射为本工具字段（用于本地 Excel/CSV 导入）
+ *  ⚠ 这张别名表必须与 scraper.py 的 COLUMN_ALIASES 保持一致，
+ *    否则"浏览器上传职位表"与"scraper.py 解析"会得到不同结果（曾出现招录机关整列空白）。 */
+const HEADER_ALIASES = {
+  '职位代码':['职位代码','职位编码','岗位代码','职位序号','招考职位代码','代码'],
+  '招录机关':['招录机关','部门名称','招录单位','招聘单位','单位名称','主管部门','机关名称'],
+  '用人司局/单位':['用人司局','用人单位','内设机构','招考单位','处室','科室','部门'],
+  '职位名称':['招考职位','职位名称','岗位名称','招聘岗位','招考岗位','职位'],
+  '招录人数':['招考人数','招录人数','计划录用人数','招聘人数','计划数','人数'],
+  '工作地点':['工作地点','工作地','工作所在地','职位分布','所属地区','地区','单位地址'],
+  '学历要求':['学历要求','学历','学历条件'],
+  '学位要求':['学位要求','学位'],
+  '专业要求原文':['专业','专业要求','所学专业','专业条件','专业类别'],
+  '专业目录归属':['专业目录归属','专业类别归属'],
+  '政治面貌':['政治面貌','政治条件'],
+  '基层工作最低年限':['基层工作最低年限','基层工作经历','基层年限','工作经历','是否要求基层工作经历'],
+  '身份要求':['身份要求','招考对象','报考身份','考生身份','面向对象','招聘对象'],
+  '户籍/生源要求':['户籍要求','户籍','生源','户籍或生源地','生源地要求'],
+  '其他条件':['其他条件','其他','其他要求','报考条件'],
+  '考试类别':['考试类别','考试科目','职位类别','试卷类别','专业考试科目'],
+  '面试比例':['面试人员比例','面试比例','面试人选比例','开考比例'],
+  '备注':['备注','其他说明'],
+  '职位简介':['职位简介','职位描述','岗位简介'],
+  '咨询电话':['咨询电话1','咨询电话','联系电话','电话','咨询电话2'],
+  '来源链接':['来源链接','链接','公告链接','来源']
+};
+function pick(row, field){
+  const aliases = HEADER_ALIASES[field] || [field];
+  const norm = k => String(k).replace(/\s|\u3000/g, '');
+  const cols = Object.keys(row);
+  const val = k => {
+    const v = row[k];
+    return (v === undefined || v === null || String(v).trim() === '') ? '' : String(v).trim();
+  };
+  // 第一轮：精确匹配表头（与 scraper.py 的 build_column_map 同策略），
+  // 避免出现「职位」这类宽泛别名把「职位代码」的值当成了「职位名称」。
+  for (const a of aliases) {
+    for (const k of cols) {
+      if (norm(k) === a) {
+        const v = val(k);
+        if (v) return v;
+      }
+    }
+  }
+  // 第二轮：包含匹配兜底
+  for (const a of aliases) {
+    for (const k of cols) {
+      if (norm(k).includes(a)) {
+        const v = val(k);
+        if (v) return v;
+      }
+    }
+  }
+  return '';
+}
+function rowsToJobs(rows){
+  return rows.map(r => {
+    const job = {};
+    COLUMNS.forEach(c => { if (c !== '匹配结论' && c !== '匹配说明' && c !== '需电话咨询') job[c] = pick(r, c); });
+    if (!job['专业目录归属']) job['专业目录归属'] = inferMajorTags(job['专业要求原文']);
+    else job['专业目录归属'] = String(job['专业目录归属']).split(/[、,，;；\/]/).map(s => s.trim()).filter(Boolean);
+    return job;
+  }).filter(j => j['职位名称'] || j['招录机关'] || j['专业要求原文']);
+}
+
+/* ------------------------------------------------------------------ *
+ * 9. CSV 导出
+ * ------------------------------------------------------------------ */
+function csvCell(v){
+  const s = v === null || v === undefined ? '' : String(v);
+  return /[",\n\r]/.test(s) ? '"' + s.replace(/"/g,'""') + '"' : s;
+}
+document.getElementById('btnCsv').onclick = () => {
+  if (!state.filtered.length){ alert('当前没有可导出的数据，请先加载数据或放宽筛选条件。'); return; }
+  const head = COLUMNS.slice();
+  const lines = [head.map(csvCell).join(',')];
+  state.filtered.forEach(job => {
+    const cls = classify(job);
+    const row = COLUMNS.map(c => {
+      if (c === '匹配结论') return ({A:'A 完全匹配',B:'B 可能匹配',C:'C 不限专业',D:'D 条件不符但相近'})[cls.level];
+      if (c === '匹配说明') return cls.reason;
+      if (c === '需电话咨询') return cls.needCall ? '需电话咨询招录单位' : '否';
+      const v = job[c];
+      return Array.isArray(v) ? v.join('、') : (v === undefined || v === null ? '' : v);
+    });
+    lines.push(row.map(csvCell).join(','));
+  });
+  // \uFEFF 带 BOM，保证 Excel 打开不乱码
+  const blob = new Blob(['\uFEFF' + lines.join('\r\n')], { type:'text/csv;charset=utf-8' });
+  const a = document.createElement('a');
+  const d = new Date();
+  const ts = d.getFullYear() + String(d.getMonth()+1).padStart(2,'0') + String(d.getDate()).padStart(2,'0') + '_' +
+             String(d.getHours()).padStart(2,'0') + String(d.getMinutes()).padStart(2,'0');
+  a.href = URL.createObjectURL(blob);
+  a.download = '公考职位筛选结果_' + state.filtered.length + '条_' + ts + '.csv';
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(a.href), 3000);
+};
+
+/* ------------------------------------------------------------------ *
+ * 10. 其他交互
+ * ------------------------------------------------------------------ */
+document.getElementById('btnReset').onclick = () => {
+  state.filters.地区 = ['江苏']; state.filters.学历 = ['本科'];
+  state.filters.专业 = ['生物科学','生物科学类','基础理学类','教育类','不限专业'];
+  state.filters.身份 = []; state.filters.政治 = []; state.filters.基层 = []; state.filters.其他 = []; state.filters.关键词 = [];
+  document.getElementById('kwInput').value = '';
+  renderFilters(); applyAndRender();
+};
+document.getElementById('kwInput').addEventListener('input', e => {
+  state.filters.关键词 = e.target.value.trim() ? e.target.value.trim().split(/\s+/) : [];
+  // 关键词输入不重算各筛选项的"预计命中数"，避免每次按键都遍历全量数据
+  applyAndRender();
+});
+document.getElementById('kwClear').onclick = () => {
+  document.getElementById('kwInput').value = '';
+  state.filters.关键词 = []; renderFilters(); applyAndRender();
+};
+document.getElementById('btnFold').onclick = e => {
+  const body = document.getElementById('filterBody');
+  const hid = body.classList.toggle('hide');
+  e.target.textContent = hid ? '展开' : '收起';
+};
+
+/* HTML 转义，防止职位表内容破坏页面结构 */
+function escapeHtml(s){
+  return String(s === null || s === undefined ? '' : s)
+    .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
+    .replace(/"/g,'&quot;').replace(/'/g,'&#39;');
+}
+function escapeAttr(s){ return escapeHtml(s); }
+
+/* ------------------------------------------------------------------ *
+ * 11. 启动
+ * ------------------------------------------------------------------ */
+renderFilters();
+renderStats();
+autoLoad();
+</script>
+</body>
+</html>

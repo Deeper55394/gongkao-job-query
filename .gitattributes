@@ -1,0 +1,20 @@
+# ============================================================================
+#  .gitattributes —— 统一换行符，避免 Windows/Linux 之间来回提交产生噪音
+# ============================================================================
+#  背景：本项目的 .bat 文件是给 cmd.exe 用的，必须是 CRLF 换行；
+#        曾经因为 LF 换行导致 cmd.exe 解析错乱（命令被截断）。
+#        这里显式声明，保证在 Windows 上克隆/推送后依然是 CRLF。
+# ============================================================================
+
+* text=auto eol=lf
+
+*.bat   text eol=crlf
+*.ps1   text eol=crlf
+*.cmd   text eol=crlf
+
+*.png   binary
+*.ico   binary
+*.xlsx  binary
+*.xls   binary
+*.zip   binary
+*.json  text eol=lf

@@ -1,0 +1,1307 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""
+scraper.py —— 公考职位表抓取 / 清洗 / 生成 data.json
+================================================================================
+用途
+    从「国家公务员局国考专题网站」「江苏先锋网」「江苏省人力资源和社会保障厅」
+    及江苏各设区市组织部/人社局等**官方渠道**，自动发现在线发布的职位表
+    附件（.xlsx / .xls / .zip），下载并用 pandas 解析、清洗，最终生成
+    前端 index.html 直接可用的 data.json。
+
+设计原则（务必遵守）
+    1. 只抓官方发布的数据，**绝不编造、不推断任何职位信息**；
+    2. 遵守 robots.txt，请求间隔默认 3 秒（如对方声明 Crawl-delay 则取更大值），
+       失败重试采用指数退避，避免对官网造成压力；
+    3. 找不到/抓不到数据时，**保留上一次的 data.json 不变**，只在 meta.warnings
+       中写明原因并以非零退出码提示，绝不写入伪造数据。
+
+常用命令
+    # 1) 联网自动抓取（GitHub Actions 每天运行的就是这一条）
+    python scraper.py
+
+    # 2) 用本地已下载的官方职位表生成 data.json（推荐本地使用，最稳）
+    python scraper.py --local 职位表.xlsx --exam-type 江苏省考 --year 2026 \
+        --source-url https://www.jszzb.gov.cn/xxx.html
+
+    # 3) 只检查官网有没有新附件，不下载
+    python scraper.py --check-only
+
+    # 4) 输出调试信息
+    python scraper.py --verbose
+
+    # 5) 自检（不联网、不写文件，仅验证解析逻辑）
+    python scraper.py --selftest
+"""
+
+from __future__ import annotations
+
+import argparse
+import hashlib
+import io
+import json
+import logging
+import os
+import re
+import sys
+import time
+import zipfile
+from dataclasses import dataclass, field
+from datetime import datetime, timedelta, timezone
+from typing import Dict, Iterable, List, Optional, Sequence, Tuple
+from urllib.parse import urljoin, urlparse
+from urllib.robotparser import RobotFileParser
+
+# --------------------------------------------------------------------------- #
+# 可选依赖：requests 缺失时自动退回标准库 urllib，保证脚本在最小环境下也能跑
+# --------------------------------------------------------------------------- #
+try:
+    import requests  # type: ignore
+    HAS_REQUESTS = True
+except Exception:  # pragma: no cover
+    import urllib.error
+    import urllib.request
+    HAS_REQUESTS = False
+
+try:
+    import pandas as pd
+except Exception:  # pragma: no cover
+    print("[FATAL] 缺少 pandas，请先执行：pip install -r requirements.txt", file=sys.stderr)
+    raise
+
+# =========================================================================== #
+#                                  配  置
+# =========================================================================== #
+
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+OUTPUT_JSON = os.path.join(BASE_DIR, "data.json")           # 输出文件
+DOWNLOAD_DIR = os.path.join(BASE_DIR, "downloads")           # 附件下载目录
+CACHE_DIR = os.path.join(BASE_DIR, "downloads", ".cache")    # 页面 HTML 缓存
+
+USER_AGENT = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/122.0 Safari/537.36 "
+    "GongkaoJobQueryBot/1.0 (+https://github.com/; 仅抓取公开职位表，遵守robots.txt)"
+)
+
+# 同一域名两次请求之间的最小间隔（秒）——避免给官网造成压力
+DEFAULT_DELAY = 3.0
+DEFAULT_TIMEOUT = 30
+MAX_RETRY = 3
+
+# local timezone（GitHub Actions 跑在 UTC，这里统一转成北京时间展示）
+CST = timezone(timedelta(hours=8))
+
+# 江苏 13 个设区市 + 常用别名，用于判定"工作地点是否在江苏"
+JIANGSU_KEYWORDS = [
+    "江苏", "南京", "无锡", "徐州", "常州", "苏州", "南通", "连云港",
+    "淮安", "盐城", "扬州", "镇江", "泰州", "宿迁",
+]
+
+# 需要重点关注的岗位类别：生物科学（师范）可能匹配的专业目录
+MAJOR_TAGS = ["生物科学", "生物科学类", "基础理学类", "教育类", "不限专业", "相近专业"]
+
+# --------------------------------------------------------------------------- #
+# 数据源配置：只允许这些**官方**域名被访问（白名单，防止误抓第三方培训网站）
+# --------------------------------------------------------------------------- #
+@dataclass
+class Source:
+    name: str                                  # 数据源名称（写入 meta）
+    exam_type: str                             # 考试类型：国考 / 江苏省考 / 江苏省考(市级)
+    year: Optional[int]                        # 默认年度（可从网页标题中自动纠正）
+    entry_pages: List[str]                     # 入口页面（公告列表页 / 专题页）
+    link_keywords: List[str]                   # 入口页里哪些链接值得跟进
+    allowed_hosts: List[str]                   # 允许访问的域名（白名单）
+    depth: int = 2                             # 跟进层级：2 = 列表页 -> 公告页 -> 附件
+
+
+SOURCES: List[Source] = [
+    # ---------------- 国家公务员考试 ----------------
+    Source(
+        name="国家公务员局·中央机关及其直属机构考试录用公务员专题（相关下载）",
+        exam_type="国考",
+        year=None,                             # 从页面标题/附件名中自动识别年度
+        entry_pages=[
+            "https://bm.scs.gov.cn/kl2026/",
+            "https://bm.scs.gov.cn/kl2025/",
+            "https://bm.scs.gov.cn/kl2024/",
+            "https://www.scs.gov.cn/",
+        ],
+        link_keywords=["相关下载", "职位表", "招考简章", "考试录用", "公告", "下载"],
+        allowed_hosts=["bm.scs.gov.cn", "www.scs.gov.cn", "scs.gov.cn"],
+        depth=2,
+    ),
+    # ---------------- 江苏省公务员考试 ----------------
+    Source(
+        name="江苏先锋网·江苏省考试录用公务员专题",
+        exam_type="江苏省考",
+        year=None,
+        entry_pages=[
+            "https://www.jszzb.gov.cn/",
+            "https://www.jszzb.gov.cn/col/col1001/index.html",  # 通知公告
+            "http://www.jszzb.gov.cn/",
+        ],
+        link_keywords=["公务员", "考试录用", "公告", "职位表", "简章", "下载"],
+        allowed_hosts=["www.jszzb.gov.cn", "jszzb.gov.cn"],
+        depth=2,
+    ),
+    Source(
+        name="江苏省人力资源和社会保障厅·人事考试/招录公告",
+        exam_type="江苏省考",
+        year=None,
+        entry_pages=[
+            "https://jshrss.jiangsu.gov.cn/",
+            "https://jshrss.jiangsu.gov.cn/col/col57253/index.html",  # 通知公告
+        ],
+        link_keywords=["公务员", "考试录用", "公告", "职位表", "招录"],
+        allowed_hosts=["jshrss.jiangsu.gov.cn"],
+        depth=2,
+    ),
+    # ---------------- 各设区市（市级岗位发布渠道） ----------------
+    Source(
+        name="南京市人力资源和社会保障局",
+        exam_type="江苏省考(南京市)",
+        year=None,
+        entry_pages=["https://rsj.nanjing.gov.cn/"],
+        link_keywords=["公务员", "考试录用", "职位表", "公告"],
+        allowed_hosts=["rsj.nanjing.gov.cn", "www.nanjing.gov.cn"],
+        depth=2,
+    ),
+    Source(
+        name="苏州市人力资源和社会保障局",
+        exam_type="江苏省考(苏州市)",
+        year=None,
+        entry_pages=["https://rsj.suzhou.gov.cn/"],
+        link_keywords=["公务员", "考试录用", "职位表", "公告"],
+        allowed_hosts=["rsj.suzhou.gov.cn", "www.suzhou.gov.cn"],
+        depth=2,
+    ),
+    Source(
+        name="无锡市人力资源和社会保障局",
+        exam_type="江苏省考(无锡市)",
+        year=None,
+        entry_pages=["https://hrss.wuxi.gov.cn/"],
+        link_keywords=["公务员", "考试录用", "职位表", "公告"],
+        allowed_hosts=["hrss.wuxi.gov.cn", "www.wuxi.gov.cn"],
+        depth=2,
+    ),
+    Source(
+        name="常州市人力资源和社会保障局",
+        exam_type="江苏省考(常州市)",
+        year=None,
+        entry_pages=["https://rsj.changzhou.gov.cn/"],
+        link_keywords=["公务员", "考试录用", "职位表", "公告"],
+        allowed_hosts=["rsj.changzhou.gov.cn", "www.changzhou.gov.cn"],
+        depth=2,
+    ),
+    Source(
+        name="南通市人力资源和社会保障局",
+        exam_type="江苏省考(南通市)",
+        year=None,
+        entry_pages=["https://rsj.nantong.gov.cn/"],
+        link_keywords=["公务员", "考试录用", "职位表", "公告"],
+        allowed_hosts=["rsj.nantong.gov.cn", "www.nantong.gov.cn"],
+        depth=2,
+    ),
+    Source(
+        name="扬州市人力资源和社会保障局",
+        exam_type="江苏省考(扬州市)",
+        year=None,
+        entry_pages=["https://rsj.yangzhou.gov.cn/"],
+        link_keywords=["公务员", "考试录用", "职位表", "公告"],
+        allowed_hosts=["rsj.yangzhou.gov.cn", "www.yangzhou.gov.cn"],
+        depth=2,
+    ),
+    Source(
+        name="泰州市人力资源和社会保障局",
+        exam_type="江苏省考(泰州市)",
+        year=None,
+        entry_pages=["https://rsj.taizhou.gov.cn/"],
+        link_keywords=["公务员", "考试录用", "职位表", "公告"],
+        allowed_hosts=["rsj.taizhou.gov.cn", "www.taizhou.gov.cn"],
+        depth=2,
+    ),
+    Source(
+        name="盐城市人力资源和社会保障局",
+        exam_type="江苏省考(盐城市)",
+        year=None,
+        entry_pages=["https://jsychrss.yancheng.gov.cn/"],
+        link_keywords=["公务员", "考试录用", "职位表", "公告"],
+        allowed_hosts=["jsychrss.yancheng.gov.cn", "www.yancheng.gov.cn"],
+        depth=2,
+    ),
+    Source(
+        name="镇江市人力资源和社会保障局",
+        exam_type="江苏省考(镇江市)",
+        year=None,
+        entry_pages=["https://hrss.zhenjiang.gov.cn/"],
+        link_keywords=["公务员", "考试录用", "职位表", "公告"],
+        allowed_hosts=["hrss.zhenjiang.gov.cn", "www.zhenjiang.gov.cn"],
+        depth=2,
+    ),
+    Source(
+        name="淮安市人力资源和社会保障局",
+        exam_type="江苏省考(淮安市)",
+        year=None,
+        entry_pages=["https://rsj.huaian.gov.cn/"],
+        link_keywords=["公务员", "考试录用", "职位表", "公告"],
+        allowed_hosts=["rsj.huaian.gov.cn", "www.huaian.gov.cn"],
+        depth=2,
+    ),
+    Source(
+        name="宿迁市人力资源和社会保障局",
+        exam_type="江苏省考(宿迁市)",
+        year=None,
+        entry_pages=["https://sqhrss.suqian.gov.cn/"],
+        link_keywords=["公务员", "考试录用", "职位表", "公告"],
+        allowed_hosts=["sqhrss.suqian.gov.cn", "www.suqian.gov.cn"],
+        depth=2,
+    ),
+    Source(
+        name="徐州市人力资源和社会保障局",
+        exam_type="江苏省考(徐州市)",
+        year=None,
+        entry_pages=["https://hrss.xz.gov.cn/"],
+        link_keywords=["公务员", "考试录用", "职位表", "公告"],
+        allowed_hosts=["hrss.xz.gov.cn", "www.xz.gov.cn"],
+        depth=2,
+    ),
+    Source(
+        name="连云港市人力资源和社会保障局",
+        exam_type="江苏省考(连云港市)",
+        year=None,
+        entry_pages=["https://rsj.lyg.gov.cn/"],
+        link_keywords=["公务员", "考试录用", "职位表", "公告"],
+        allowed_hosts=["rsj.lyg.gov.cn", "www.lyg.gov.cn"],
+        depth=2,
+    ),
+]
+
+# --------------------------------------------------------------------------- #
+# 官方职位表表头 -> 本工具标准字段 的别名映射
+# 说明：国考、江苏省考、各市职位表的表头每年都略有差异，这里做归一化。
+# --------------------------------------------------------------------------- #
+COLUMN_ALIASES: Dict[str, List[str]] = {
+    "职位代码":       ["职位代码", "职位编码", "岗位代码", "职位序号", "招考职位代码", "代码"],
+    "招录机关":       ["招录机关", "部门名称", "招录单位", "招聘单位", "单位名称", "主管部门", "机关名称"],
+    "用人司局/单位":  ["用人司局", "用人单位", "内设机构", "招考单位", "处室", "科室", "部门"],
+    "职位名称":       ["招考职位", "职位名称", "岗位名称", "招聘岗位", "招考岗位", "职位"],
+    "招录人数":       ["招考人数", "招录人数", "计划录用人数", "招聘人数", "计划数", "人数"],
+    "工作地点":       ["工作地点", "工作地", "工作所在地", "职位分布", "所属地区", "地区", "单位地址"],
+    "学历要求":       ["学历要求", "学历", "学历条件"],
+    "学位要求":       ["学位要求", "学位"],
+    "专业要求原文":   ["专业", "专业要求", "所学专业", "专业条件", "专业类别"],
+    "政治面貌":       ["政治面貌", "政治条件"],
+    "基层工作最低年限": ["基层工作最低年限", "基层工作经历", "基层年限", "工作经历", "是否要求基层工作经历"],
+    "身份要求":       ["身份要求", "招考对象", "报考身份", "考生身份", "面向对象", "招聘对象"],
+    "户籍/生源要求":  ["户籍要求", "户籍", "生源", "户籍或生源地", "生源地要求"],
+    "其他条件":       ["其他条件", "其他", "其他要求", "报考条件"],
+    "考试类别":       ["考试类别", "考试科目", "职位类别", "试卷类别", "专业考试科目"],
+    "面试比例":       ["面试人员比例", "面试比例", "面试人选比例", "开考比例"],
+    "备注":           ["备注", "其他说明"],
+    "职位简介":       ["职位简介", "职位描述", "岗位简介", "说明"],
+    "咨询电话":       ["咨询电话1", "咨询电话", "联系电话", "电话", "咨询电话2"],
+    "落户地点":       ["落户地点", "落户"],
+    "机构性质":       ["机构性质", "单位性质", "机构层级"],
+    "服务基层项目工作经历": ["服务基层项目工作经历", "服务基层项目", "基层项目"],
+}
+
+# 前端展示 / CSV 导出的字段顺序
+OUTPUT_FIELDS = [
+    "考试类型", "年度", "职位代码", "招录机关", "用人司局/单位", "职位名称", "招录人数",
+    "工作地点", "学历要求", "学位要求", "专业要求原文", "专业目录归属", "政治面貌",
+    "基层工作最低年限", "身份要求", "户籍/生源要求", "其他条件", "考试类别", "面试比例",
+    "备注", "咨询电话", "来源链接", "匹配结论", "匹配说明", "需电话咨询",
+]
+
+log = logging.getLogger("scraper")
+
+
+def init_console() -> None:
+    """
+    让脚本在 Windows（默认 GBK 控制台）下也不会因为中文/特殊字符抛
+    UnicodeEncodeError：
+      * 控制台本身能表示中文（GBK/UTF-8）时，保持原编码，仅把不可编码字符替换为 '?'；
+      * 控制台是 ascii 等无法表示中文的编码时，强制切换为 UTF-8。
+    """
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            enc = (getattr(stream, "encoding", "") or "").lower()
+            if enc in ("", "ascii", "ansi_x3.4-1968", "us-ascii"):
+                stream.reconfigure(encoding="utf-8", errors="replace")
+            else:
+                stream.reconfigure(errors="replace")
+        except Exception:
+            pass
+
+
+init_console()
+
+
+# =========================================================================== #
+#                          一、HTTP 访问层（礼貌抓取）
+# =========================================================================== #
+
+class PoliteSession:
+    """
+    礼貌的 HTTP 会话：
+      * 同一域名请求间隔 >= max(DEFAULT_DELAY, robots 声明的 Crawl-delay)
+      * 遵守 robots.txt（Disallow 的路径直接跳过）
+      * 3 次重试 + 指数退避
+      * 只允许访问白名单域名
+    """
+
+    def __init__(self, delay: float = DEFAULT_DELAY, timeout: int = DEFAULT_TIMEOUT,
+                 allowed_hosts: Optional[Iterable[str]] = None):
+        self.delay = delay
+        self.timeout = timeout
+        self.allowed_hosts = set(allowed_hosts or [])
+        self._last_request: Dict[str, float] = {}      # host -> 上次请求时间
+        self._robots: Dict[str, Optional[RobotFileParser]] = {}
+        self._crawl_delay: Dict[str, float] = {}
+        self.skipped: List[str] = []                   # 被 robots.txt 拒绝的 URL
+        if HAS_REQUESTS:
+            self.session = requests.Session()
+            self.session.headers.update({
+                "User-Agent": USER_AGENT,
+                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+                "Accept-Language": "zh-CN,zh;q=0.9",
+            })
+        else:
+            self.session = None
+
+    # ---------------- 基础：节流 + 重试 ---------------- #
+    def _throttle(self, host: str) -> None:
+        wait = max(self.delay, self._crawl_delay.get(host, 0.0))
+        last = self._last_request.get(host)
+        if last is not None:
+            gap = time.time() - last
+            if gap < wait:
+                time.sleep(round(wait - gap, 2))
+        self._last_request[host] = time.time()
+
+    def _raw_get(self, url: str) -> Tuple[Optional[bytes], Optional[str]]:
+        """返回 (内容字节, content-type)；失败返回 (None, None)"""
+        for attempt in range(1, MAX_RETRY + 1):
+            try:
+                if HAS_REQUESTS:
+                    r = self.session.get(url, timeout=self.timeout, allow_redirects=True)
+                    if r.status_code >= 400:
+                        raise RuntimeError("HTTP %s" % r.status_code)
+                    return r.content, r.headers.get("Content-Type", "")
+                else:  # pragma: no cover - 仅在无 requests 环境走这里
+                    req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
+                    with urllib.request.urlopen(req, timeout=self.timeout) as resp:
+                        return resp.read(), resp.headers.get("Content-Type", "")
+            except Exception as exc:
+                if attempt >= MAX_RETRY:
+                    log.warning("  请求失败（已重试 %d 次）：%s -> %s", MAX_RETRY, url, exc)
+                    return None, None
+                backoff = 2 ** attempt
+                log.info("  请求异常(%s)，%d 秒后重试：%s", exc, backoff, url)
+                time.sleep(backoff)
+        return None, None
+
+    # ---------------- robots.txt ---------------- #
+    def robots_allowed(self, url: str) -> bool:
+        parsed = urlparse(url)
+        host = parsed.netloc
+        if host not in self._robots:
+            robots_url = "%s://%s/robots.txt" % (parsed.scheme, host)
+            rp: Optional[RobotFileParser] = None
+            content, _ = self._raw_get(robots_url)
+            if content:
+                try:
+                    rp = RobotFileParser()
+                    rp.parse(content.decode("utf-8", errors="ignore").splitlines())
+                    cd = rp.crawl_delay(USER_AGENT) or rp.crawl_delay("*")
+                    if cd:
+                        self._crawl_delay[host] = float(cd)
+                        log.info("  robots.txt 声明 Crawl-delay=%s 秒（%s）", cd, host)
+                except Exception as exc:
+                    log.info("  robots.txt 解析失败（%s），按允许处理", exc)
+                    rp = None
+            else:
+                log.info("  未取到 robots.txt（%s），按允许处理", host)
+            self._robots[host] = rp
+
+        rp = self._robots[host]
+        if rp is None:
+            return True
+        ok = rp.can_fetch(USER_AGENT, url) or rp.can_fetch("*", url)
+        if not ok:
+            log.warning("  [robots] robots.txt 禁止抓取，已跳过：%s", url)
+            self.skipped.append(url)
+        return ok
+
+    # ---------------- 对外：取文本 / 取二进制 ---------------- #
+    def get_text(self, url: str, check_robots: bool = True) -> Optional[str]:
+        host = urlparse(url).netloc
+        if self.allowed_hosts and host not in self.allowed_hosts:
+            log.info("  跳过非白名单域名：%s", url)
+            return None
+        if check_robots and not self.robots_allowed(url):
+            return None
+        self._throttle(host)
+        log.info("  GET %s", url)
+        content, ctype = self._raw_get(url)
+        if content is None:
+            return None
+        # 自动识别编码：优先页面声明的 charset，其次 utf-8，最后 gb18030（政府网站常见）
+        text = None
+        head = content[:4096].decode("ascii", errors="ignore").lower()
+        m = re.search(r'charset=["\']?([\w-]+)', head)
+        encodings = [m.group(1)] if m else []
+        encodings += ["utf-8", "gb18030"]
+        for enc in encodings:
+            try:
+                text = content.decode(enc)
+                break
+            except Exception:
+                continue
+        return text
+
+    def get_bytes(self, url: str) -> Optional[bytes]:
+        host = urlparse(url).netloc
+        if self.allowed_hosts and host not in self.allowed_hosts:
+            log.info("  跳过非白名单域名：%s", url)
+            return None
+        if not self.robots_allowed(url):
+            return None
+        self._throttle(host)
+        log.info("  DOWNLOAD %s", url)
+        content, _ = self._raw_get(url)
+        return content
+
+
+# =========================================================================== #
+#                        二、发现附件（职位表 Excel）
+# =========================================================================== #
+
+EXCEL_EXT = (".xlsx", ".xls", ".xlsm")
+ARCHIVE_EXT = (".zip", ".rar", ".7z")
+ATTACH_KEYWORDS = ["职位表", "职位简介", "招考简章", "招录职位", "岗位表", "职位信息表", "职位一览表"]
+# 明显不是职位表的附件，避免误下载（如报名登记表、专业目录、考试大纲等）
+ATTACH_BLOCKLIST = ["专业目录", "考试大纲", "报名登记表", "报名推荐表", "准考证", "体检", "承诺书", "答题卡"]
+
+
+@dataclass
+class Attachment:
+    url: str
+    title: str
+    page_url: str          # 发现该附件的页面（作为"来源链接"）
+    source_name: str
+    exam_type: str
+    year: Optional[int]
+
+
+@dataclass
+class DiscoverStats:
+    pages_visited: int = 0
+    attachments: List[Attachment] = field(default_factory=list)
+    errors: List[str] = field(default_factory=list)
+
+
+def guess_year(*texts: str) -> Optional[int]:
+    """从标题/文件名中识别年度：优先"2026年度""2026年"等表述"""
+    for t in texts:
+        if not t:
+            continue
+        m = re.search(r"(20\d{2})\s*(?:年度|年)", t)
+        if m:
+            return int(m.group(1))
+    for t in texts:
+        if not t:
+            continue
+        m = re.search(r"(20\d{2})", t)
+        if m:
+            return int(m.group(1))
+    return None
+
+
+def extract_links(html: str, base_url: str) -> List[Tuple[str, str]]:
+    """极简 HTML 链接抽取（不引入 bs4 依赖）：返回 [(绝对URL, 锚文本)]"""
+    out: List[Tuple[str, str]] = []
+    for m in re.finditer(r"<a\b[^>]*href\s*=\s*[\"']([^\"']+)[\"'][^>]*>(.*?)</a>", html, re.I | re.S):
+        href, inner = m.group(1).strip(), m.group(2)
+        title = re.sub(r"<[^>]+>", "", inner)
+        title = re.sub(r"\s+", " ", title).strip()
+        if not href or href.lower().startswith(("javascript:", "mailto:", "#")):
+            continue
+        out.append((urljoin(base_url, href), title))
+    return out
+
+
+def is_excel_attachment(url: str, title: str) -> bool:
+    low = url.lower().split("?")[0]
+    is_file = low.endswith(EXCEL_EXT) or low.endswith(ARCHIVE_EXT)
+    # 部分政府站点的下载链接形如 downfile.jsp?filename=xx.xlsx
+    if not is_file and re.search(r"\.(xlsx?|zip|rar)(\b|$)", url, re.I):
+        is_file = True
+    if not is_file:
+        return False
+    if any(bad in title for bad in ATTACH_BLOCKLIST):
+        return False
+    joined = title + " " + url
+    return any(k in joined for k in ATTACH_KEYWORDS) or low.endswith(EXCEL_EXT)
+
+
+def discover_attachments(sess: PoliteSession, src: Source, max_pages: int = 40) -> DiscoverStats:
+    """
+    两级跟进：入口页 -> （含"职位表/招录公告"的公告页）-> 附件
+    对每个数据源独立 try/except，单个源失败不影响其他源。
+    """
+    stats = DiscoverStats()
+    queue: List[Tuple[str, int]] = [(u, 1) for u in src.entry_pages]
+    visited: set = set()
+
+    while queue and stats.pages_visited < max_pages:
+        url, depth = queue.pop(0)
+        if url in visited:
+            continue
+        visited.add(url)
+        host = urlparse(url).netloc
+        if host not in src.allowed_hosts:
+            continue
+
+        html = sess.get_text(url)
+        stats.pages_visited += 1
+        if not html:
+            stats.errors.append("打开失败：%s" % url)
+            continue
+
+        for abs_url, title in extract_links(html, url):
+            # 1) 直接命中 Excel / zip 附件
+            if is_excel_attachment(abs_url, title):
+                year = guess_year(title, abs_url, url)
+                stats.attachments.append(Attachment(
+                    url=abs_url, title=title or os.path.basename(abs_url),
+                    page_url=url, source_name=src.name,
+                    exam_type=src.exam_type, year=year or src.year,
+                ))
+                continue
+            # 2) 继续跟进公告页（仅同域名、且标题含关键词）
+            if depth < src.depth and urlparse(abs_url).netloc in src.allowed_hosts:
+                if any(k in title for k in src.link_keywords) and len(visited) + len(queue) < max_pages:
+                    queue.append((abs_url, depth + 1))
+        time.sleep(0.5)   # 每个页面之间再喘口气
+
+    # 去重（同一附件可能被多个页面链接）
+    seen, uniq = set(), []
+    for a in stats.attachments:
+        key = a.url.split("?")[0].lower()
+        if key not in seen:
+            seen.add(key)
+            uniq.append(a)
+    stats.attachments = uniq
+    return stats
+
+
+# =========================================================================== #
+#                        三、下载与解压
+# =========================================================================== #
+
+def safe_filename(url: str, title: str) -> str:
+    base = os.path.basename(urlparse(url).path) or "attachment"
+    base = re.sub(r"[\\/:*?\"<>|\s]+", "_", base)[:80]
+    if not base.lower().endswith(EXCEL_EXT + ARCHIVE_EXT):
+        base = re.sub(r"\.(jsp|do|action)$", "", base, flags=re.I) + ".xlsx"
+    digest = hashlib.md5(url.encode("utf-8")).hexdigest()[:8]
+    name = "%s_%s" % (digest, base)
+    ext = os.path.splitext(base)[1].lower()
+    if ext not in EXCEL_EXT + ARCHIVE_EXT:
+        name += ".xlsx"
+    return name
+
+
+def download_attachment(sess: PoliteSession, att: Attachment, out_dir: str) -> List[str]:
+    """下载附件并（必要时）解压，返回本地 Excel 文件路径列表"""
+    os.makedirs(out_dir, exist_ok=True)
+    path = os.path.join(out_dir, safe_filename(att.url, att.title))
+    if os.path.exists(path) and os.path.getsize(path) > 0:
+        log.info("  已存在，跳过下载：%s", os.path.basename(path))
+    else:
+        content = sess.get_bytes(att.url)
+        if not content:
+            return []
+        if len(content) < 1024:
+            log.warning("  附件过小（%d 字节），可能是错误页，跳过：%s", len(content), att.url)
+            return []
+        with open(path, "wb") as fh:
+            fh.write(content)
+
+    low = path.lower()
+    if low.endswith(EXCEL_EXT):
+        return [path]
+    if low.endswith(".zip"):
+        return unzip_excel(path, out_dir)
+    if low.endswith((".rar", ".7z")):
+        log.warning("  .rar/.7z 需外部工具解压，已跳过：%s（请在本地解压后用 --local 传入）", path)
+        return []
+    return []
+
+
+def unzip_excel(zip_path: str, out_dir: str) -> List[str]:
+    """解压 zip，返回其中的 Excel 文件路径（忽略 __MACOSX 等垃圾）"""
+    results: List[str] = []
+    target = os.path.splitext(zip_path)[0] + "_unzip"
+    try:
+        with zipfile.ZipFile(zip_path) as zf:
+            for info in zf.infolist():
+                name = info.filename
+                if name.startswith("__MACOSX") or name.endswith("/"):
+                    continue
+                if not name.lower().endswith(EXCEL_EXT):
+                    continue
+                # 只取看起来像职位表的文件
+                if not (any(k in name for k in ATTACH_KEYWORDS) or len(zf.namelist()) <= 3):
+                    continue
+                os.makedirs(target, exist_ok=True)
+                out = os.path.join(target, os.path.basename(name))
+                with zf.open(info) as src_fh, open(out, "wb") as dst_fh:
+                    dst_fh.write(src_fh.read())
+                results.append(out)
+    except zipfile.BadZipFile:
+        log.warning("  zip 文件损坏：%s", zip_path)
+    return results
+
+
+# =========================================================================== #
+#                   四、Excel 解析与字段归一化
+# =========================================================================== #
+
+def read_excel_all_sheets(path: str) -> "pd.DataFrame":
+    """
+    读取 Excel 的全部 sheet 并纵向合并。
+    国考职位表通常 4 个 sheet（中央党群/国家行政机关直属机构/参照公务员法管理事业单位/…），
+    江苏省考职位表常按地市分 sheet，都必须合并。
+    """
+    ext = os.path.splitext(path)[1].lower()
+    engines: List[Optional[str]]
+    if ext in (".xlsx", ".xlsm"):
+        engines = ["openpyxl", None]
+    else:  # .xls
+        engines = ["xlrd", "openpyxl", None]
+
+    last_err: Optional[Exception] = None
+    for engine in engines:
+        try:
+            sheets = pd.read_excel(path, sheet_name=None, dtype=str, engine=engine)
+            frames = []
+            for name, df in sheets.items():
+                if df is None or df.empty:
+                    continue
+                df = df.dropna(how="all").dropna(axis=1, how="all")
+                if df.empty or df.shape[1] < 2:
+                    continue
+                df["_sheet"] = name
+                frames.append(df)
+            if frames:
+                return pd.concat(frames, ignore_index=True, sort=False)
+        except Exception as exc:      # 换下一个引擎再试
+            last_err = exc
+            continue
+    raise RuntimeError("无法解析 Excel：%s（%s）" % (path, last_err))
+
+
+def build_column_map(df: "pd.DataFrame") -> Dict[str, str]:
+    """
+    建立 {标准字段: 原始列名} 的映射。
+
+    注意：**绝不能**用 df.rename() 直接改名 —— 官方职位表里常有
+    「职位简介」和「备注」同时存在的情况，若两列都被映射成同一个标准名，
+    pandas 会出现重名列，后续 row["备注"] 取到的将是一个 Series 而非字符串
+    （历史 bug）。这里改为"标准字段 -> 唯一原始列"的取值方式，从根上避免重名。
+
+    匹配策略：先精确匹配表头，再做包含匹配兜底。
+    """
+    raw_cols: List[Tuple[object, str]] = [
+        (c, str(c).strip().replace(" ", "").replace("\u3000", "")) for c in df.columns
+    ]
+    std2raw: Dict[str, str] = {}
+    used_raw: set = set()
+
+    # 1) 精确匹配优先，保证「备注」映射到「备注」而不是「职位简介」
+    for std, aliases in COLUMN_ALIASES.items():
+        for raw, norm in raw_cols:
+            if raw in used_raw:
+                continue
+            if norm in aliases:
+                std2raw[std] = raw
+                used_raw.add(raw)
+                break
+    # 2) 包含匹配兜底（只补充尚未映射到的标准字段）
+    for std, aliases in COLUMN_ALIASES.items():
+        if std in std2raw:
+            continue
+        for raw, norm in raw_cols:
+            if raw in used_raw:
+                continue
+            if any(a and a in norm for a in aliases):
+                std2raw[std] = raw
+                used_raw.add(raw)
+                break
+    return std2raw
+
+
+def clean_text(v) -> str:
+    """去除多余空白、全角空格、换行，统一为单行文本"""
+    if v is None:
+        return ""
+    try:
+        if v != v:            # NaN
+            return ""
+    except Exception:
+        pass
+    s = str(v)
+    s = s.replace("\u3000", " ").replace("\xa0", " ")
+    s = re.sub(r"\s+", " ", s)
+    return s.strip()
+
+
+# ------------------------------ 专业匹配 ------------------------------ #
+
+RE_NO_LIMIT = re.compile(r"不限专业|专业不限|不作专业限制|无专业限制|专业无限制")
+RE_BIO_SCI_EXACT = re.compile(r"生物科学(?!类)")          # "生物科学"但排除"生物科学类"
+RE_BIO_SCI_CLASS = re.compile(r"生物科学类")
+RE_BASIC_SCIENCE = re.compile(r"基础理学类|理学类")
+RE_EDU_CLASS = re.compile(r"教育类|教育学类|学科教学|师范类")
+RE_BIO_OTHER = re.compile(r"生物|生命科学|生物工程|生物技术|生态")
+
+
+def tag_majors(major_text: str) -> List[str]:
+    """
+    按专业要求原文打标签（与前端 index.html 中的 inferMajorTags 规则一致）。
+    标签取值：生物科学 / 生物科学类 / 基础理学类 / 教育类 / 不限专业 / 相近专业
+    """
+    t = clean_text(major_text)
+    if not t:
+        return []
+    if RE_NO_LIMIT.search(t):
+        return ["不限专业"]
+
+    tags: List[str] = []
+    if RE_BIO_SCI_EXACT.search(t):
+        tags.append("生物科学")
+    if RE_BIO_SCI_CLASS.search(t):
+        tags.append("生物科学类")
+    if RE_BASIC_SCIENCE.search(t):
+        tags.append("基础理学类")
+    if RE_EDU_CLASS.search(t):
+        tags.append("教育类")
+    if "生物科学" not in tags and "生物科学类" not in tags and RE_BIO_OTHER.search(t):
+        tags.append("相近专业")
+    # 去重且保持稳定顺序
+    return [t_ for i, t_ in enumerate(tags) if t_ not in tags[:i]]
+
+
+# ------------------------------ 其他字段推导 ------------------------------ #
+
+RE_TEACHER_CERT = re.compile(r"教师资格|教师资格证|教师证")
+RE_NORMAL_MAJOR = re.compile(r"师范类|师范专业|须为师范|限师范")
+RE_YINGJIE = re.compile(r"应届")
+RE_ZEYEQI = re.compile(r"择业期")
+RE_WANGSHOU = re.compile(r"往届|社会人员|在职人员|非应届")
+RE_NO_LIMIT_ID = re.compile(r"不限|均可|无限制")
+
+
+def derive_identity(row_text: str) -> str:
+    """身份要求：职位表常常没有单独一列，需要从备注/职位简介中推导"""
+    t = clean_text(row_text)
+    if not t:
+        return "不限"
+    if RE_ZEYEQI.search(t):
+        return "应届/择业期内"
+    if RE_YINGJIE.search(t):
+        return "应届"
+    if RE_WANGSHOU.search(t):
+        return "往届"
+    return "不限"
+
+
+def derive_exam_year(exam_type: str, year: Optional[int], title: str = "") -> int:
+    y = year or guess_year(title)
+    if y:
+        return y
+    # 兜底：江苏省考通常在上一年的 10-11 月发布，国考同理
+    now = datetime.now(CST)
+    return now.year + 1 if now.month >= 9 else now.year
+
+
+def classify(job: Dict[str, object]) -> Tuple[str, str, str]:
+    """
+    匹配结论（与前端 index.html 的 classify 规则完全一致）
+      返回 (等级, 说明, 是否需电话咨询)
+      A 完全匹配 / B 可能匹配需核实 / C 不限专业 / D 条件不符但相近
+    """
+    major_text = clean_text(job.get("专业要求原文"))
+    tags = job.get("专业目录归属") or tag_majors(major_text)
+    if not isinstance(tags, list):
+        tags = tag_majors(str(tags))
+    edu = clean_text(job.get("学历要求"))
+    extra = " ".join([clean_text(job.get("其他条件")), clean_text(job.get("备注"))])
+
+    need_cert = bool(RE_TEACHER_CERT.search(extra) or RE_TEACHER_CERT.search(major_text))
+    need_normal = bool(RE_NORMAL_MAJOR.search(extra) or RE_NORMAL_MAJOR.search(major_text))
+    reasons: List[str] = []
+
+    bachelor_ok = (edu == "") or bool(re.search(r"不限|本科|大专|专科", edu)) or not re.search(r"研究生|硕士|博士", edu)
+
+    if not bachelor_ok:
+        level, reasons = "D", ["学历要求为%s，本科不可报或需进一步确认" % (edu or "未注明")]
+    elif "不限专业" in tags:
+        level, reasons = "C", ["专业不限，任何专业均可报考"]
+    else:
+        exact = "生物科学" in tags
+        broad = ("生物科学类" in tags) or ("基础理学类" in tags)
+        edu_cls = "教育类" in tags
+        if exact or broad:
+            if need_normal or need_cert:
+                level = "B"
+                extra_req = "、".join([x for x in ["师范类" if need_normal else "", "教师资格证" if need_cert else ""] if x])
+                reasons = ["专业目录匹配，但岗位额外要求" + extra_req]
+            else:
+                level = "A"
+                matched = "生物科学" if exact else "、".join([t for t in tags if t in ("生物科学类", "基础理学类")])
+                reasons = ["专业目录明确包含" + matched]
+        elif edu_cls:
+            level, reasons = "B", ["属于教育类/师范方向，需核对本科专业是否被认定为教育类"]
+        else:
+            level, reasons = "D", ["专业要求未明确包含生物科学相关目录，仅条件相近，需电话核实"]
+
+    # 是否需电话咨询招录单位
+    call_reasons: List[str] = []
+    if "师范" in major_text:
+        call_reasons.append("毕业证专业名称含「师范」，各省专业目录认定口径不同")
+    if need_normal:
+        call_reasons.append("岗位要求师范类")
+    if need_cert:
+        call_reasons.append("岗位要求教师资格证")
+    if level != "A":
+        call_reasons.append("匹配结论非完全匹配")
+    return level, "；".join(reasons), "；".join(call_reasons) if call_reasons else "否"
+
+
+# ------------------------------ 行 -> 职位对象 ------------------------------ #
+
+def rows_to_jobs(df: "pd.DataFrame", *, exam_type: str, year: Optional[int],
+                 source_url: str, source_name: str, source_file: str,
+                 scraped_at: str) -> List[Dict[str, object]]:
+    colmap = build_column_map(df)          # {标准字段: 原始列名}
+    if not colmap:
+        log.warning("  表头无法识别，跳过该文件：%s", source_file)
+        log.info("  实际表头：%s", list(df.columns)[:20])
+        return []
+    log.debug("  字段映射：%s", {k: str(v) for k, v in colmap.items()})
+
+    jobs: List[Dict[str, object]] = []
+
+    for _, row in df.iterrows():
+        def g(field_name: str) -> str:
+            """按标准字段名取值（列名重复时也不会取到 Series）"""
+            raw = colmap.get(field_name)
+            if raw is None:
+                return ""
+            val = row.get(raw, "")
+            if hasattr(val, "tolist"):        # 兜底：万一遇到重名列返回 Series
+                val = next((x for x in val.tolist() if clean_text(x)), "")
+            return clean_text(val)
+
+        major_text = g("专业要求原文")
+        title = g("职位名称")
+        org = g("招录机关")
+        unit = g("用人司局/单位")
+        if not (title or org or unit):
+            continue                    # 空行 / 表头重复行
+        if title in ("招考职位", "职位名称", "岗位名称"):
+            continue                    # 多 sheet 合并后可能重复表头
+
+        # 备注 + 职位简介 + 其他条件 合并，用于推导身份要求等
+        remark = "；".join([x for x in [g("备注"), g("职位简介"), g("其他条件")] if x])
+        identity = g("身份要求") or derive_identity(remark + " " + title)
+        if re.search(r"不限", g("身份要求")):
+            identity = "不限"
+
+        job: Dict[str, object] = {
+            "考试类型": exam_type,
+            "年度": derive_exam_year(exam_type, year, source_file),
+            "职位代码": g("职位代码"),
+            "招录机关": org or unit,
+            "用人司局/单位": unit,
+            "职位名称": title,
+            "招录人数": g("招录人数"),
+            "工作地点": g("工作地点") or ("江苏省" if "江苏" in exam_type else ""),
+            "学历要求": g("学历要求"),
+            "学位要求": g("学位要求"),
+            "专业要求原文": major_text,
+            "专业目录归属": tag_majors(major_text),
+            "政治面貌": g("政治面貌") or "不限",
+            "基层工作最低年限": g("基层工作最低年限") or g("服务基层项目工作经历") or "无",
+            "身份要求": identity,
+            "户籍/生源要求": g("户籍/生源要求") or "不限",
+            "其他条件": g("其他条件"),
+            "考试类别": g("考试类别"),
+            "面试比例": g("面试比例"),
+            "备注": g("备注") or g("职位简介"),
+            "咨询电话": g("咨询电话"),
+            "落户地点": g("落户地点"),
+            "机构性质": g("机构性质"),
+            "来源链接": source_url,
+            "来源文件": source_file,
+            "数据来源": source_name,
+            "抓取时间": scraped_at,
+        }
+        level, reason, need_call = classify(job)
+        job["匹配结论"] = level
+        job["匹配说明"] = reason
+        job["需电话咨询"] = need_call
+        jobs.append(job)
+    return jobs
+
+
+def is_jiangsu(job: Dict[str, object]) -> bool:
+    text = " ".join([clean_text(job.get(k)) for k in ("工作地点", "招录机关", "用人司局/单位")])
+    if "江苏省考" in str(job.get("考试类型", "")):
+        return True
+    return any(k in text for k in JIANGSU_KEYWORDS)
+
+
+def is_relevant_biology(job: Dict[str, object]) -> bool:
+    """是否与"本科·生物科学（师范）"相关（用于默认收窄数据量）"""
+    tags = job.get("专业目录归属") or []
+    if tags:
+        return True
+    return bool(RE_BIO_OTHER.search(clean_text(job.get("专业要求原文"))))
+
+
+# =========================================================================== #
+#                        五、主流程
+# =========================================================================== #
+
+def load_existing(path: str) -> Tuple[Dict[str, dict], Dict[str, object]]:
+    """读取已有 data.json，返回 (以唯一键索引的职位字典, meta)"""
+    if not os.path.exists(path):
+        return {}, {}
+    try:
+        with open(path, "r", encoding="utf-8") as fh:
+            payload = json.load(fh)
+    except Exception as exc:
+        log.warning("已有 data.json 解析失败（%s），将重新生成", exc)
+        return {}, {}
+    if isinstance(payload, list):
+        records, meta = payload, {}
+    elif isinstance(payload, dict):
+        records, meta = payload.get("jobs", []), payload.get("meta", {})
+    else:
+        records, meta = [], {}
+    index = {job_key(r): r for r in records if isinstance(r, dict)}
+    return index, meta
+
+
+def job_key(job: Dict[str, object]) -> str:
+    """职位唯一键：考试类型 + 年度 + 职位代码；无代码时退回 机关+名称+专业"""
+    code = clean_text(job.get("职位代码"))
+    if code:
+        return "|".join([clean_text(job.get("考试类型")), clean_text(job.get("年度")), code])
+    return "|".join([clean_text(job.get("招录机关")), clean_text(job.get("职位名称")),
+                     clean_text(job.get("专业要求原文"))[:40]])
+
+
+def merge_jobs(existing: Dict[str, dict], fresh: List[Dict[str, object]]) -> Tuple[List[Dict[str, object]], int, int]:
+    """合并新旧数据：新数据覆盖同唯一键的旧记录，返回 (全部记录, 新增数, 更新数)"""
+    merged = dict(existing)
+    added = updated = 0
+    for job in fresh:
+        k = job_key(job)
+        if k in merged:
+            old = merged[k]
+            # 保留旧的抓取时间用于比较，仅在有实质变化时算作"更新"
+            if any(clean_text(old.get(f)) != clean_text(job.get(f))
+                   for f in ("专业要求原文", "学历要求", "招录人数", "其他条件", "工作地点", "职位名称")):
+                updated += 1
+            merged[k] = {**old, **job}
+        else:
+            merged[k] = job
+            added += 1
+    return list(merged.values()), added, updated
+
+
+def write_data_json(path: str, jobs: List[Dict[str, object]], meta: Dict[str, object]) -> None:
+    payload = {"meta": meta, "jobs": jobs}
+    tmp = path + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as fh:
+        json.dump(payload, fh, ensure_ascii=False, indent=2)
+    os.replace(tmp, path)               # 原子替换，避免写到一半被中断
+
+
+def build_argparser() -> argparse.ArgumentParser:
+    p = argparse.ArgumentParser(
+        description="公考职位表抓取/清洗工具：生成前端使用的 data.json（仅使用官方数据）",
+        formatter_class=argparse.RawDescriptionHelpFormatter)
+    p.add_argument("--local", nargs="+", metavar="XLSX",
+                   help="使用本地已下载的官方职位表（.xlsx/.xls），可传多个文件")
+    p.add_argument("--exam-type", default="江苏省考",
+                   help="配合 --local 使用：数据所属考试类型（默认 江苏省考）")
+    p.add_argument("--year", type=int, default=None, help="配合 --local 使用：年度（默认自动识别）")
+    p.add_argument("--source-url", default="", help="配合 --local 使用：官方原文链接")
+    p.add_argument("--source-name", default="", help="配合 --local 使用：数据来源名称")
+    p.add_argument("--output", default=OUTPUT_JSON, help="输出文件路径（默认 ./data.json）")
+    p.add_argument("--delay", type=float, default=DEFAULT_DELAY, help="同一域名请求最小间隔秒数（默认 3）")
+    p.add_argument("--max-pages", type=int, default=40, help="每个数据源最多访问的页面数（默认 40）")
+    p.add_argument("--scope", choices=["jiangsu-biology", "all"], default="jiangsu-biology",
+                   help="收录范围：jiangsu-biology=江苏且与生物科学相关（默认）；all=全部")
+    p.add_argument("--data-status", choices=["auto", "official", "local-import", "sample"],
+                   default="auto", help="写入 meta.data_status 的数据状态标记；sample 会在每条记录上标注「是否示例=true」")
+    p.add_argument("--no-merge", action="store_true", help="不合并历史数据，直接用本次抓取结果覆盖")
+    p.add_argument("--check-only", action="store_true", help="只检查是否存在新的职位表附件，不下载")
+    p.add_argument("--dry-run", action="store_true", help="解析但不写入 data.json")
+    p.add_argument("--selftest", action="store_true", help="离线自检解析与匹配逻辑，不联网")
+    p.add_argument("--verbose", "-v", action="store_true", help="输出调试日志")
+    return p
+
+
+def setup_logging(verbose: bool) -> None:
+    logging.basicConfig(
+        level=logging.DEBUG if verbose else logging.INFO,
+        format="%(asctime)s [%(levelname)s] %(message)s",
+        datefmt="%H:%M:%S",
+    )
+
+
+# --------------------------------------------------------------------------- #
+# 自检：验证"专业打标签 + 匹配结论"，不联网
+# --------------------------------------------------------------------------- #
+def selftest() -> int:
+    cases = [
+        ("生物科学（师范）",           "本科及以上", "研究生", "A"),
+        ("生物科学类、基础理学类",     "本科及以上", "",       "A"),
+        ("不限专业",                   "本科及以上", "",       "C"),
+        ("教育学类（生物方向）",       "本科及以上", "",       "B"),
+        ("生物技术、生物工程",         "本科及以上", "",       "D"),
+        ("生物科学",                   "本科及以上", "须具有高级中学生物学科教师资格证", "B"),
+        ("生物科学",                   "硕士研究生及以上", "", "D"),
+    ]
+    ok = True
+    for text, edu, extra, expect in cases:
+        job = {"专业要求原文": text, "学历要求": edu, "专业目录归属": tag_majors(text),
+               "其他条件": extra, "备注": ""}
+        level, reason, call = classify(job)
+        flag = "[通过]" if level == expect else "[失败]"
+        if level != expect:
+            ok = False
+        print("%s 专业=%-22s 学历=%-10s -> %s（期望 %s）| %s | 需咨询: %s"
+              % (flag, text, edu, level, expect, reason, call))
+    print("\n自检%s" % ("全部通过" if ok else "存在失败用例"))
+    return 0 if ok else 1
+
+
+# --------------------------------------------------------------------------- #
+# 主流程
+# --------------------------------------------------------------------------- #
+def main(argv: Optional[Sequence[str]] = None) -> int:
+    args = build_argparser().parse_args(argv)
+    setup_logging(args.verbose)
+
+    if args.selftest:
+        return selftest()
+
+    started = datetime.now(CST)
+    scraped_at = started.isoformat(timespec="seconds")
+    fresh: List[Dict[str, object]] = []
+    warnings: List[str] = []
+    sources_meta: List[Dict[str, object]] = []
+    local_mode = bool(args.local)
+
+    # ------------------------------------------------------------------ #
+    # 模式 A：解析本地已下载的官方职位表（最稳定，推荐）
+    # ------------------------------------------------------------------ #
+    if local_mode:
+        for path in args.local:
+            if not os.path.exists(path):
+                warnings.append("本地文件不存在：%s" % path)
+                log.error("本地文件不存在：%s", path)
+                continue
+            try:
+                df = read_excel_all_sheets(path)
+            except Exception as exc:
+                warnings.append("解析失败 %s：%s" % (os.path.basename(path), exc))
+                log.error("解析失败：%s（%s）", path, exc)
+                continue
+            # 年度：优先 --year，其次从文件名识别；都识别不到时给出明确提示（避免默默写成错误年度）
+            file_year = args.year or guess_year(os.path.basename(path))
+            if not file_year:
+                fallback_year = derive_exam_year(args.exam_type, None, "")
+                log.warning("  未能从文件名识别年度，将按 %d 年处理；如需修正请加 --year 参数（例如 --year %d）",
+                            fallback_year, started.year)
+            jobs = rows_to_jobs(df, exam_type=args.exam_type, year=file_year,
+                                source_url=args.source_url or "（本地文件，无在线链接）",
+                                source_name=args.source_name or "本地导入的官方职位表",
+                                source_file=os.path.basename(path), scraped_at=scraped_at)
+            log.info("  %s -> 解析出 %d 条职位", os.path.basename(path), len(jobs))
+            fresh.extend(jobs)
+            sources_meta.append({
+                "source_name": args.source_name or "本地导入",
+                "exam_type": args.exam_type,
+                "file": os.path.basename(path),
+                "url": args.source_url,
+                "records": len(jobs),
+                "fetched_at": scraped_at,
+            })
+
+    # ------------------------------------------------------------------ #
+    # 模式 B：联网抓取官方渠道
+    # ------------------------------------------------------------------ #
+    else:
+        all_hosts = sorted({h for s in SOURCES for h in s.allowed_hosts})
+        sess = PoliteSession(delay=args.delay, allowed_hosts=all_hosts)
+        if not HAS_REQUESTS:
+            log.warning("未安装 requests，已退回标准库 urllib（建议 pip install requests）")
+
+        for src in SOURCES:
+            log.info("═══ 数据源：%s ═══", src.name)
+            try:
+                stat = discover_attachments(sess, src, max_pages=args.max_pages)
+            except Exception as exc:
+                warnings.append("%s 抓取异常：%s" % (src.name, exc))
+                log.warning("  抓取异常：%s", exc)
+                continue
+
+            log.info("  访问 %d 个页面，发现 %d 个候选附件", stat.pages_visited, len(stat.attachments))
+            if stat.errors:
+                warnings.append("%s 有 %d 个页面打开失败" % (src.name, len(stat.errors)))
+            for err in stat.errors[:3]:
+                log.info("    · %s", err)
+
+            if args.check_only:
+                for a in stat.attachments:
+                    print("  [发现] %s -> %s" % (a.title[:50], a.url))
+                sources_meta.append({"source_name": src.name, "pages": stat.pages_visited,
+                                     "attachments": len(stat.attachments)})
+                continue
+
+            for att in stat.attachments:
+                try:
+                    files = download_attachment(sess, att, DOWNLOAD_DIR)
+                except Exception as exc:
+                    warnings.append("下载失败 %s：%s" % (att.url, exc))
+                    continue
+                for file_path in files:
+                    try:
+                        df = read_excel_all_sheets(file_path)
+                        jobs = rows_to_jobs(
+                            df, exam_type=att.exam_type, year=att.year,
+                            source_url=att.page_url, source_name=att.source_name,
+                            source_file=os.path.basename(file_path), scraped_at=scraped_at)
+                    except Exception as exc:
+                        warnings.append("解析失败 %s：%s" % (os.path.basename(file_path), exc))
+                        log.warning("  解析失败 %s：%s", file_path, exc)
+                        continue
+                    log.info("  [OK] %s -> %d 条职位", os.path.basename(file_path), len(jobs))
+                    fresh.extend(jobs)
+                    sources_meta.append({
+                        "source_name": att.source_name,
+                        "exam_type": att.exam_type,
+                        "title": att.title,
+                        "file": os.path.basename(file_path),
+                        "url": att.page_url,
+                        "attachment_url": att.url,
+                        "records": len(jobs),
+                        "fetched_at": scraped_at,
+                    })
+
+        if sess.skipped:
+            warnings.append("遵守 robots.txt 跳过 %d 个链接" % len(sess.skipped))
+
+    # ------------------------------------------------------------------ #
+    # 收窄范围 + 合并 + 输出
+    # ------------------------------------------------------------------ #
+    if args.scope == "jiangsu-biology":
+        before = len(fresh)
+        fresh = [j for j in fresh if is_jiangsu(j) and is_relevant_biology(j)]
+        log.info("范围收窄（江苏 + 生物相关）：%d -> %d 条", before, len(fresh))
+
+    # 同一批次内去重
+    dedup: Dict[str, Dict[str, object]] = {}
+    for j in fresh:
+        dedup[job_key(j)] = j
+    fresh = list(dedup.values())
+
+    existing, old_meta = ({}, {}) if args.no_merge else load_existing(args.output)
+    merged, added, updated = merge_jobs(existing, fresh)
+    merged.sort(key=lambda j: (clean_text(j.get("考试类型")), clean_text(j.get("年度")),
+                               clean_text(j.get("招录机关"))), reverse=True)
+
+    # 关键安全阀：本次没有抓到任何新数据时，绝不覆盖既有 data.json
+    if not fresh:
+        log.error("[跳过] 本次未获取到任何官方职位数据，已保留原有 data.json 不变。")
+        print("\n" + "=" * 72)
+        print("未获取到新数据，可能原因与建议：")
+        print("  1) 官方专题页尚未发布/尚未到发布期（国考通常 10 月、江苏省考通常 10-11 月）；")
+        print("  2) 目标网站对境外 IP（如 GitHub Actions 运行环境）限制访问；")
+        print("  3) 页面为 JS 动态渲染，或附件为 .rar 需人工解压。")
+        print("  建议：在本地浏览器下载官方职位表 Excel 后，执行：")
+        print("      python scraper.py --local 你的职位表.xlsx --exam-type 江苏省考 --year %d \\" % (started.year + 1))
+        print("          --source-url https://官方公告页面地址")
+        print("=" * 72 + "\n")
+        if not existing:
+            warnings.append("首次运行未获取到数据，未生成 data.json（不编造数据）")
+            if not args.dry_run:
+                log.error("不写入任何文件（绝不编造职位数据）。")
+            return 2
+        # 有历史数据：只更新 meta 中的告警信息，不动 jobs
+        old_meta = dict(old_meta or {})
+        old_meta["warnings"] = (old_meta.get("warnings") or [])[:0] + warnings + \
+            ["本次(%s)定时抓取未发现新职位表，数据保持为上一次抓取结果" % started.strftime("%Y-%m-%d %H:%M")]
+        old_meta["last_check"] = scraped_at
+        if not args.dry_run:
+            write_data_json(args.output, merged, old_meta)
+        return 2
+
+    data_status = ("local-import" if local_mode else "official") if args.data_status == "auto" else args.data_status
+    if data_status == "sample":
+        # 明确标注为示例数据，避免与真实职位混淆（前端会显示红色"示例数据"角标）
+        for j in merged:
+            j["是否示例"] = True
+        warnings.append("当前 data.json 为格式示例数据，不是真实职位，请以官方职位表为准")
+
+    meta = {
+        "last_update": scraped_at,
+        "last_update_text": started.strftime("%Y-%m-%d %H:%M") + "（北京时间）",
+        "last_check": scraped_at,
+        "generator": "scraper.py",
+        "data_status": data_status,
+        "record_count": len(merged),
+        "new_records": added,
+        "updated_records": updated,
+        "scope": args.scope,
+        "exam_types": sorted({clean_text(j.get("考试类型")) for j in merged if j.get("考试类型")}),
+        "sources": sources_meta,
+        "warnings": warnings,
+        "disclaimer": "数据来自官方公开职位表，仅供筛选参考；报考条件以官方公告、职位表原件及招录单位答复为准。",
+    }
+
+    if args.dry_run:
+        log.info("--dry-run：解析到 %d 条（合并后 %d 条），未写入文件", len(fresh), len(merged))
+    else:
+        write_data_json(args.output, merged, meta)
+        log.info("已写入 %s：共 %d 条（新增 %d，更新 %d）", args.output, len(merged), added, updated)
+
+    # 打印摘要，便于在 Actions 日志中快速查看
+    print("\n" + "=" * 72)
+    print("抓取完成：%s" % started.strftime("%Y-%m-%d %H:%M:%S %Z"))
+    print("输出文件：%s" % args.output)
+    print("职位总数：%d（新增 %d / 更新 %d）" % (len(merged), added, updated))
+    levels: Dict[str, int] = {}
+    for j in merged:
+        levels[clean_text(j.get("匹配结论"))] = levels.get(clean_text(j.get("匹配结论")), 0) + 1
+    print("匹配结论分布：" + " ".join("%s=%d" % (k, v) for k, v in sorted(levels.items())))
+    if warnings:
+        print("告警：")
+        for w in warnings:
+            print("  ! " + w)
+    print("=" * 72 + "\n")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
