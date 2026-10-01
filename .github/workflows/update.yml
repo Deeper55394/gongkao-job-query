@@ -111,9 +111,10 @@ jobs:
 
       - name: 探针：官方是否已发布新年度职位表
         run: |
-          # 只做轻量探测（几个页面），无论结果如何都不影响主流程；
-          # 发现新年度时日志里会出现 🎉 与具体链接，便于人工确认
-          python tools/probe_new_cycle.py --delay 2 || true
+          # 只做轻量探测，发现新年度时日志里会出现 🎉 与具体链接。
+          # ⚠ 必须加硬超时：境外访问国内站点会"连接挂起"，若不限制，
+          #    探针自己就能把任务拖到十几分钟（曾实测到）。
+          timeout 150 python tools/probe_new_cycle.py --delay 2 || true
 
       - name: 抓取并生成 data.json
         id: scrape
