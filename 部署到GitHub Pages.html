@@ -145,11 +145,11 @@
 <ol>
 <li>打开 <strong>Settings → Pages</strong>；
 </li>
-<li><strong>Source</strong> 二选一（推荐 A）：
+<li><strong>Source</strong> 二选一（<strong>两种本项目都已实测可用</strong>）：
 <ul>
-<li><strong>A. GitHub Actions</strong> —— 用仓库自带的 <code>update.yml</code> 部署（推荐，官方新方式）；
+<li><strong>A. Deploy from a branch</strong> —— Branch 选 <code>main</code>，目录选 <code>/ (root)</code>，保存。 优点：<strong>不依赖 Actions 能否跑成功</strong>，每次 push 自动重新发布，最省心（本项目线上一开始就用这种）。
 </li>
-<li><strong>B. Deploy from a branch</strong> —— Branch 选 <code>main</code>，目录选 <code>/ (root)</code>，保存。 （分支部署时 GitHub 直接托管仓库根目录，页面上能直接访问 <code>index.html</code>，同样可用； 仓库自带的工作流会<strong>自动判断并跳过</strong> Actions 部署，不会天天报红。）
+<li><strong>B. GitHub Actions</strong> —— 用仓库自带的 <code>update.yml</code> 部署（官方新方式，站点内容与抓取任务强绑定）。 仓库自带的工作流会<strong>自动识别</strong>你选了哪种：分支部署时它会跳过 Actions 部署步骤，<strong>不会天天报红</strong>。
 </li></ul>
 </li></ol>
 <ol>
@@ -196,7 +196,8 @@
 <tr><td>想手动触发</td><td>仓库 <strong>Actions → 自动更新公考职位数据 → Run workflow</strong></td></tr>
 <tr><td>拿到官方 Excel 想立刻更新</td><td>① 本机用 <code>更新数据.bat</code> 生成新 <code>data.json</code>；② 在网页上打开仓库里的 <code>data.json</code> → 点铅笔图标（Edit）→ 全选删除 → 粘贴新内容 → Commit changes</td></tr>
 </tbody></table></div>
-<blockquote><p><strong>重要提醒</strong>：GitHub 的服务器在境外，政府网站常限制境外 IP 访问，所以<strong>自动抓取可能长期失败</strong>。 这不是部署出错，遇到这种情况就用上面第 3 行的手动办法。 工具抓不到数据时不会覆盖已有 <code>data.json</code>，也绝不会编造数据。</p></blockquote>
+<blockquote><p><strong>重要提醒</strong>：GitHub 的服务器在境外，政府网站常限制境外 IP 访问，所以<strong>自动抓取可能长期失败</strong>。 实测数据：一次定时任务里 17 个官方站点（国考专题、江苏先锋网、人社厅、13 个设区市人社局）<strong>页面全部访问失败</strong>， 而同一时刻在本机（国内网络）访问只要 0.3 秒 —— 这是<strong>地域封锁，不是配置错误</strong>。 这不是部署出错，遇到这种情况用下面第三节的手动办法。 工具抓不到数据时不会覆盖已有 <code>data.json</code>，也绝不会编造数据。</p></blockquote>
+<blockquote><p><strong>想让它真正每天自动更新？</strong> 两条可行路线（都需要你点头，涉及在你电脑上做设置）： 1. <strong>让更新在你的电脑上定时跑</strong>：用自己的网络抓取 → 本地生成 data.json → 自动 <code>git push</code> 回仓库（Pages 会自动重新发布）。国内网络能访问官网，这是最省事的。 2. <strong>自建 GitHub Actions 运行器（self-hosted runner）</strong>：把 runner 装在你的电脑上，让 GitHub 的工作流在你的网络里执行，仓库里现有工作流不用改。</p></blockquote>
 <hr />
 <h2 id="sec-16">四、部署成功怎么验证</h2>
 <ol>
