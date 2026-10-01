@@ -29,6 +29,14 @@ if not defined PY (
 
 if not defined PY goto nopython
 
+REM Best-effort sync: pull data.json / index.html committed by the daily workflow,
+REM so the local page shows the same data as the online site.
+REM Silently skipped when offline or when there are local uncommitted changes.
+set "GITEXE="
+where git >nul 2>nul && set "GITEXE=git"
+if not defined GITEXE if exist "%ProgramFiles%\Git\cmd\git.exe" set "GITEXE=%ProgramFiles%\Git\cmd\git.exe"
+if defined GITEXE if exist ".git" "%GITEXE%" pull --ff-only --quiet >nul 2>nul
+
 "%PY%" "tools\serve.py" %*
 goto end
 
