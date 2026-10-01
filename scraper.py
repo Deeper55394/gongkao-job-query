@@ -78,10 +78,13 @@ OUTPUT_JSON = os.path.join(BASE_DIR, "data.json")           # 输出文件
 DOWNLOAD_DIR = os.path.join(BASE_DIR, "downloads")           # 附件下载目录
 CACHE_DIR = os.path.join(BASE_DIR, "downloads", ".cache")    # 页面 HTML 缓存
 
+# HTTP 头只能用 latin-1 编码，因此 User-Agent 必须是纯 ASCII！
+# （踩过的坑：UA 里写了中文，导致 requests 在发送请求头时抛
+#   'latin-1' codec can't encode characters —— 所有能连通的站点全部失败）
 USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
     "(KHTML, like Gecko) Chrome/122.0 Safari/537.36 "
-    "GongkaoJobQueryBot/1.0 (+https://github.com/; 仅抓取公开职位表，遵守robots.txt)"
+    "GongkaoJobQueryBot/1.0 (+https://github.com/; respects robots.txt)"
 )
 
 # 同一域名两次请求之间的最小间隔（秒）——避免给官网造成压力
@@ -122,9 +125,10 @@ SOURCES: List[Source] = [
         exam_type="国考",
         year=None,                             # 从页面标题/附件名中自动识别年度
         entry_pages=[
-            "https://bm.scs.gov.cn/kl2026/",
-            "https://bm.scs.gov.cn/kl2025/",
-            "https://bm.scs.gov.cn/kl2024/",
+            # 实测：bm.scs.gov.cn 的 443 端口直接拒绝连接，但 80 端口可用（2026-10 实测）
+            "http://bm.scs.gov.cn/kl2026/",
+            "http://bm.scs.gov.cn/kl2025/",
+            "http://bm.scs.gov.cn/kl2024/",
             "https://www.scs.gov.cn/",
         ],
         link_keywords=["相关下载", "职位表", "招考简章", "考试录用", "公告", "下载"],
@@ -171,9 +175,10 @@ SOURCES: List[Source] = [
         name="苏州市人力资源和社会保障局",
         exam_type="江苏省考(苏州市)",
         year=None,
-        entry_pages=["https://rsj.suzhou.gov.cn/"],
+        # 实测：rlsbj.suzhou.gov.cn 不存在；hrss.suzhou.gov.cn 存在但有重定向环，用 http 入口
+        entry_pages=["http://hrss.suzhou.gov.cn/"],
         link_keywords=["公务员", "考试录用", "职位表", "公告"],
-        allowed_hosts=["rsj.suzhou.gov.cn", "www.suzhou.gov.cn"],
+        allowed_hosts=["hrss.suzhou.gov.cn", "www.suzhou.gov.cn"],
         depth=2,
     ),
     Source(
@@ -207,9 +212,10 @@ SOURCES: List[Source] = [
         name="扬州市人力资源和社会保障局",
         exam_type="江苏省考(扬州市)",
         year=None,
-        entry_pages=["https://rsj.yangzhou.gov.cn/"],
+        # 实测：rsj.yangzhou.gov.cn 不存在，正确域名是 hrss.yangzhou.gov.cn（2026-10 实测 200）
+        entry_pages=["https://hrss.yangzhou.gov.cn/"],
         link_keywords=["公务员", "考试录用", "职位表", "公告"],
-        allowed_hosts=["rsj.yangzhou.gov.cn", "www.yangzhou.gov.cn"],
+        allowed_hosts=["hrss.yangzhou.gov.cn", "www.yangzhou.gov.cn"],
         depth=2,
     ),
     Source(
@@ -356,12 +362,15 @@ class PoliteSession:
         self.delay = delay
         self.timeout = timeout
         self.allowed_hosts = set(allowed_hosts or [])
+        self.strict_tls = False                        # 默认：证书链异常时对该域名降级重试
+        self.insecure_hosts: set = set()               # 已降级的域名（只读公开页面，不发送凭据）
         self._last_request: Dict[str, float] = {}      # host -> 上次请求时间
         self._robots: Dict[str, Optional[RobotFileParser]] = {}
         self._crawl_delay: Dict[str, float] = {}
         self.skipped: List[str] = []                   # 被 robots.txt 拒绝的 URL
         if HAS_REQUESTS:
             self.session = requests.Session()
+            self.session.max_redirects = 6             # 政府站偶有重定向环，尽早失败而不是死等
             self.session.headers.update({
                 "User-Agent": USER_AGENT,
                 "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
@@ -381,11 +390,22 @@ class PoliteSession:
         self._last_request[host] = time.time()
 
     def _raw_get(self, url: str) -> Tuple[Optional[bytes], Optional[str]]:
-        """返回 (内容字节, content-type)；失败返回 (None, None)"""
-        for attempt in range(1, MAX_RETRY + 1):
+        """
+        返回 (内容字节, content-type)；失败返回 (None, None)。
+
+        特例：不少政府站点的证书链有问题（自签名中间证书、证书主机名不匹配），
+        但页面本身是公开信息。这里在**证书校验失败**时对该域名降级重试一次
+        （仅 GET 公开页面，不发送任何凭据），并在日志中明确记录。
+        如需强制严格校验，用 --strict-tls。
+        """
+        host = urlparse(url).netloc
+        attempt = 0
+        while attempt < MAX_RETRY:
+            attempt += 1
             try:
                 if HAS_REQUESTS:
-                    r = self.session.get(url, timeout=self.timeout, allow_redirects=True)
+                    r = self.session.get(url, timeout=self.timeout, allow_redirects=True,
+                                         verify=(host not in self.insecure_hosts))
                     if r.status_code >= 400:
                         raise RuntimeError("HTTP %s" % r.status_code)
                     return r.content, r.headers.get("Content-Type", "")
@@ -394,6 +414,15 @@ class PoliteSession:
                     with urllib.request.urlopen(req, timeout=self.timeout) as resp:
                         return resp.read(), resp.headers.get("Content-Type", "")
             except Exception as exc:
+                msg = str(exc)
+                # 证书问题 -> 降级一次（不消耗重试次数）
+                if (not self.strict_tls and host not in self.insecure_hosts
+                        and "CERTIFICATE_VERIFY_FAILED" in msg):
+                    self.insecure_hosts.add(host)
+                    log.warning("  %s 证书校验失败，本次运行对该域名放宽 TLS 校验"
+                                "（只读取公开页面，不发送任何凭据）", host)
+                    attempt -= 1
+                    continue
                 if attempt >= MAX_RETRY:
                     log.warning("  请求失败（已重试 %d 次）：%s -> %s", MAX_RETRY, url, exc)
                     return None, None
@@ -481,8 +510,13 @@ class PoliteSession:
 EXCEL_EXT = (".xlsx", ".xls", ".xlsm")
 ARCHIVE_EXT = (".zip", ".rar", ".7z")
 ATTACH_KEYWORDS = ["职位表", "职位简介", "招考简章", "招录职位", "岗位表", "职位信息表", "职位一览表"]
-# 明显不是职位表的附件，避免误下载（如报名登记表、专业目录、考试大纲等）
-ATTACH_BLOCKLIST = ["专业目录", "考试大纲", "报名登记表", "报名推荐表", "准考证", "体检", "承诺书", "答题卡"]
+# 只抓"公务员"相关：附件标题或所在页面标题必须命中其中之一
+ATTACH_REQUIRE = ["公务员", "考试录用"]
+# 明显不是职位表的附件，避免误下载
+# （实测教训：不排除"事业单位"就会把市属事业单位招聘岗位表当成公务员职位表抓进来）
+ATTACH_BLOCKLIST = ["专业目录", "考试大纲", "报名登记表", "报名推荐表", "准考证", "体检", "承诺书", "答题卡",
+                    "事业单位", "编外", "劳务派遣", "公益性岗位", "辅警", "社区工作者", "专职网格员",
+                    "聘用制", "政府购买服务", "国有企业", "校园招聘", "实习"]
 
 
 @dataclass
@@ -500,6 +534,7 @@ class DiscoverStats:
     pages_visited: int = 0
     attachments: List[Attachment] = field(default_factory=list)
     errors: List[str] = field(default_factory=list)
+    filtered: int = 0        # 命中"是 Excel 但不是公务员职位表"（如事业单位岗位表）而过滤掉的数量
 
 
 def guess_year(*texts: str) -> Optional[int]:
@@ -532,7 +567,22 @@ def extract_links(html: str, base_url: str) -> List[Tuple[str, str]]:
     return out
 
 
-def is_excel_attachment(url: str, title: str) -> bool:
+def extract_page_title(html: str) -> str:
+    """取 <title> 作为附件的上下文（很多附件锚文本只有"附件1"，含义在页面标题里）"""
+    m = re.search(r"<title[^>]*>(.*?)</title>", html, re.I | re.S)
+    if not m:
+        return ""
+    return re.sub(r"\s+", " ", re.sub(r"<[^>]+>", "", m.group(1))).strip()
+
+
+def is_excel_attachment(url: str, title: str, page_title: str = "") -> bool:
+    """
+    判断某个链接是否是"公务员职位表"附件。
+
+    ⚠ 实测教训：只按"岗位表/职位表"匹配会把**事业单位公开招聘**的岗位表也抓进来
+    （南京、宿迁的市属事业单位岗位表就命中过）。这类不是国考/江苏省考公务员职位，
+    必须靠负面词 + 必须命中"公务员/考试录用"来排除。
+    """
     low = url.lower().split("?")[0]
     is_file = low.endswith(EXCEL_EXT) or low.endswith(ARCHIVE_EXT)
     # 部分政府站点的下载链接形如 downfile.jsp?filename=xx.xlsx
@@ -540,10 +590,16 @@ def is_excel_attachment(url: str, title: str) -> bool:
         is_file = True
     if not is_file:
         return False
-    if any(bad in title for bad in ATTACH_BLOCKLIST):
+
+    context = " ".join([title, page_title, url])
+    # 1) 排除明显不是公务员职位表的（事业单位/编外/劳务派遣/辅警等）
+    if any(bad in context for bad in ATTACH_BLOCKLIST):
         return False
-    joined = title + " " + url
-    return any(k in joined for k in ATTACH_KEYWORDS) or low.endswith(EXCEL_EXT)
+    # 2) 必须是公务员相关：标题里出现"公务员"或"考试录用"
+    if not any(good in context for good in ATTACH_REQUIRE):
+        return False
+    # 3) 再要求是职位表类附件
+    return any(k in context for k in ATTACH_KEYWORDS) or low.endswith(EXCEL_EXT)
 
 
 def discover_attachments(sess: PoliteSession, src: Source, max_pages: int = 40) -> DiscoverStats:
@@ -570,16 +626,22 @@ def discover_attachments(sess: PoliteSession, src: Source, max_pages: int = 40) 
             stats.errors.append("打开失败：%s" % url)
             continue
 
+        page_title = extract_page_title(html)
         for abs_url, title in extract_links(html, url):
-            # 1) 直接命中 Excel / zip 附件
-            if is_excel_attachment(abs_url, title):
-                year = guess_year(title, abs_url, url)
+            # 1) 直接命中 Excel / zip 附件（用锚文本 + 页面标题 + URL 一起判断）
+            if is_excel_attachment(abs_url, title, page_title):
+                year = guess_year(title, abs_url, url, page_title)
                 stats.attachments.append(Attachment(
                     url=abs_url, title=title or os.path.basename(abs_url),
                     page_url=url, source_name=src.name,
                     exam_type=src.exam_type, year=year or src.year,
                 ))
                 continue
+            # 记录被过滤掉的 Excel 附件（便于人工确认过滤是否过严）
+            low = abs_url.lower().split("?")[0]
+            if low.endswith(EXCEL_EXT + ARCHIVE_EXT):
+                stats.filtered += 1
+                log.debug("  过滤非公务员附件：%s | 页面：%s", (title or abs_url)[:50], page_title[:50])
             # 2) 继续跟进公告页（仅同域名、且标题含关键词）
             if depth < src.depth and urlparse(abs_url).netloc in src.allowed_hosts:
                 if any(k in title for k in src.link_keywords) and len(visited) + len(queue) < max_pages:
@@ -1047,6 +1109,8 @@ def build_argparser() -> argparse.ArgumentParser:
     p.add_argument("--source-name", default="", help="配合 --local 使用：数据来源名称")
     p.add_argument("--output", default=OUTPUT_JSON, help="输出文件路径（默认 ./data.json）")
     p.add_argument("--delay", type=float, default=DEFAULT_DELAY, help="同一域名请求最小间隔秒数（默认 3）")
+    p.add_argument("--strict-tls", action="store_true",
+                   help="严格校验 HTTPS 证书；默认遇到证书链异常的政府站点会降级重试并记录日志")
     p.add_argument("--max-pages", type=int, default=40, help="每个数据源最多访问的页面数（默认 40）")
     p.add_argument("--scope", choices=["jiangsu-biology", "all"], default="jiangsu-biology",
                    help="收录范围：jiangsu-biology=江苏且与生物科学相关（默认）；all=全部")
@@ -1154,6 +1218,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     else:
         all_hosts = sorted({h for s in SOURCES for h in s.allowed_hosts})
         sess = PoliteSession(delay=args.delay, allowed_hosts=all_hosts)
+        sess.strict_tls = args.strict_tls
         if not HAS_REQUESTS:
             log.warning("未安装 requests，已退回标准库 urllib（建议 pip install requests）")
 
@@ -1166,7 +1231,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 log.warning("  抓取异常：%s", exc)
                 continue
 
-            log.info("  访问 %d 个页面，发现 %d 个候选附件", stat.pages_visited, len(stat.attachments))
+            log.info("  访问 %d 个页面，发现 %d 个候选附件%s", stat.pages_visited, len(stat.attachments),
+                     ("（另有 %d 个非公务员附件已过滤，如事业单位岗位表）" % stat.filtered) if stat.filtered else "")
             if stat.errors:
                 warnings.append("%s 有 %d 个页面打开失败" % (src.name, len(stat.errors)))
             for err in stat.errors[:3]:

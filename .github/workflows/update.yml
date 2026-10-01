@@ -31,6 +31,15 @@ on:
         options: ['jiangsu-biology', 'all']
         default: 'jiangsu-biology'
 
+  # 改了抓取代码就自动跑一次，用来立刻验证改动是否有效
+  # （data.json / index.html 被机器人提交时不会命中这些路径，因此不会形成循环）
+  push:
+    paths:
+      - 'scraper.py'
+      - 'requirements.txt'
+      - 'tools/**'
+      - '.github/workflows/update.yml'
+
 # 允许工作流把 data.json 提交回仓库，并部署 GitHub Pages
 permissions:
   contents: write
