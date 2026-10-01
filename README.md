@@ -33,6 +33,8 @@ gongkao-job-query/
 ├── 创建桌面快捷方式.bat                 # 【Windows】一键在桌面生成「公考职位查询」快捷方式（带自定义图标）
 ├── 部署到GitHub.bat                   # 【Windows】一键把项目推送到你的 GitHub 仓库（需先装 Git）
 ├── 检查新职位表.bat                    # 【Windows】检查官方是否已发布新年度职位表（可自动更新）
+├── 安装提醒.bat                        # 【Windows】开启「每天自动检查 + 发现新表弹窗提醒」计划任务
+├── 取消提醒.bat                        # 【Windows】关闭上面的计划任务
 ├── jiangsu_regions.json               # 江苏 区县->设区市 映射（城市筛选与咨询电话归属共用）
 ├── 启动.bat                           # 【Windows】一键启动本地服务并打开页面（可自动读取 data.json）
 ├── 更新数据.bat                       # 【Windows】把官方职位表拖上去 → 自动生成 data.json 并同步进 index.html
@@ -101,6 +103,26 @@ gongkao-job-query/
 
 **手动导入（备用）**：从官方下载职位表 Excel，拖进 `更新数据.bat` 并选「国考」；
 国考与省考记录**并存互不覆盖**（唯一键与年度策略都按考试类型区分）。
+
+### 新年度职位表提醒（推荐开启）
+
+双击 **`安装提醒.bat`** 即可注册一个 Windows 计划任务（当前用户、无需管理员）：
+
+- 每天 **10:30** 自动跑一次轻量探测（只看几个官方页面）；
+- **没发现新表 → 完全静默**，只往 `提醒记录.log` 写一行；
+- **发现新表 → 弹窗提醒**，点「是」立刻抓取 → 内嵌 → 推送（约 1-3 分钟）；
+- 同一年度只提醒一次（状态存在 `.remind-state.json`），不会天天骚扰你。
+
+管理命令（也可以直接双击对应 bat）：
+
+```
+powershell -ExecutionPolicy Bypass -File tools\manage_reminder.ps1 -Action status    # 查看状态/最近记录
+powershell -ExecutionPolicy Bypass -File tools\manage_reminder.ps1 -Action test      # 弹一次演示提醒
+powershell -ExecutionPolicy Bypass -File tools\manage_reminder.ps1 -Action run       # 立刻按真实逻辑检查一次
+powershell -ExecutionPolicy Bypass -File tools\manage_reminder.ps1 -Action install -Time 09:00   # 改时间
+```
+
+关闭：双击 `取消提醒.bat`。注意：任务只在**你登录时**运行（否则无法弹窗）。
 
 ---
 
@@ -369,6 +391,7 @@ git add data.json index.html && git commit -m "data: 更新 2026 江苏省考职
 | 咨询电话 | 从官方《招录单位咨询电话》Word 表按 (城市,单位) 回填，覆盖率约 68% |
 | 年度策略 | 只保留每类考试最新年度；新年度发布后旧年度自动替换（`--year-policy keep-all` 可留历年） |
 | 新表探针 | `检查新职位表.bat` / `tools/probe_new_cycle.py`：点名检查新年度是否已发布 |
+| 新表提醒 | `安装提醒.bat`：每天 10:30 自动检查，**发现就弹窗**；点「是」立刻抓取更新 |
 | 筛选条件 | 工作地点（默认勾选**江苏**）、学历（默认**本科**）、专业匹配（生物科学/生物科学类/基础理学类/教育类/不限专业/相近专业，默认全选）、身份（应届/择业期/往届/不限）、政治面貌（中共党员/共青团员/群众/不限）、基层工作经历（无/满1年/满2年/满3年）、其他（教师资格证、师范类、匹配结论、不需电话咨询）、关键词搜索 |
 | 预计命中数 | 每个筛选项旁显示在当前其他条件下可命中的条数，避免"筛到 0 条"的无效操作 |
 | 结果展示 | 桌面端 23 列表格（横向滚动 + 表头吸顶）；手机端自动切换为卡片视图，字段完整可读 |
