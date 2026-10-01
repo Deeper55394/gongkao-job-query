@@ -63,6 +63,15 @@ except Exception:  # pragma: no cover
     import urllib.request
     HAS_REQUESTS = False
 
+# 在证书链异常的政府站点上我们会主动放宽 TLS 校验（并自行记录日志），
+# 这里关掉 urllib3 的重复告警，避免刷屏。
+if HAS_REQUESTS:  # pragma: no cover
+    try:
+        import urllib3
+        urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+    except Exception:
+        pass
+
 try:
     import pandas as pd
 except Exception:  # pragma: no cover
@@ -125,10 +134,9 @@ SOURCES: List[Source] = [
         exam_type="国考",
         year=None,                             # 从页面标题/附件名中自动识别年度
         entry_pages=[
-            # 实测：bm.scs.gov.cn 的 443 端口直接拒绝连接，但 80 端口可用（2026-10 实测）
+            # 实测：bm.scs.gov.cn 的 443 端口拒绝连接，80 端口可用；kl2025/kl2024 已下线(404)
             "http://bm.scs.gov.cn/kl2026/",
-            "http://bm.scs.gov.cn/kl2025/",
-            "http://bm.scs.gov.cn/kl2024/",
+            "http://bm.scs.gov.cn/kl2027/",
             "https://www.scs.gov.cn/",
         ],
         link_keywords=["相关下载", "职位表", "招考简章", "考试录用", "公告", "下载"],
@@ -389,7 +397,7 @@ class PoliteSession:
                 time.sleep(round(wait - gap, 2))
         self._last_request[host] = time.time()
 
-    def _raw_get(self, url: str) -> Tuple[Optional[bytes], Optional[str]]:
+    def _raw_get(self, url: str, retry_4xx: bool = True) -> Tuple[Optional[bytes], Optional[str]]:
         """
         返回 (内容字节, content-type)；失败返回 (None, None)。
 
@@ -406,6 +414,8 @@ class PoliteSession:
                 if HAS_REQUESTS:
                     r = self.session.get(url, timeout=self.timeout, allow_redirects=True,
                                          verify=(host not in self.insecure_hosts))
+                    if not retry_4xx and r.status_code in (404, 410):
+                        return None, None          # robots.txt 不存在是常态，不值得重试 3 次
                     if r.status_code >= 400:
                         raise RuntimeError("HTTP %s" % r.status_code)
                     return r.content, r.headers.get("Content-Type", "")
@@ -438,7 +448,7 @@ class PoliteSession:
         if host not in self._robots:
             robots_url = "%s://%s/robots.txt" % (parsed.scheme, host)
             rp: Optional[RobotFileParser] = None
-            content, _ = self._raw_get(robots_url)
+            content, _ = self._raw_get(robots_url, retry_4xx=False)
             if content:
                 try:
                     rp = RobotFileParser()
