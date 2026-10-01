@@ -36,7 +36,7 @@ gongkao-job-query/
 ├── 部署到GitHub Pages.md / .html       # 【教程】部署到 GitHub Pages 的完整步骤（含"不用装软件"的网页上传法）
 ├── 先看这里.txt                        # 【教程】给非技术用户的上手说明
 ├── scraper.py                         # 【数据】抓取 + 解析 + 清洗 + 生成 data.json
-├── data.json                          # 【数据】前端读取的数据（当前为格式示例，8 条）
+├── data.json                          # 【数据】真实职位数据（江苏省2026年度官方职位表，497 条相关职位）
 ├── requirements.txt                   # Python 依赖
 ├── README.md                          # 本文件
 ├── .nojekyll                          # GitHub Pages 需要（跳过 Jekyll 处理）
