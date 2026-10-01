@@ -28,7 +28,7 @@ const scripts = [...html.matchAll(/<script\b([^>]*)>([\s\S]*?)<\/script>/gi)]
   .filter(m => !/\bsrc=/i.test(m[1]) && !/application\/json/i.test(m[1]))
   .map(m => m[2]);
 if (!scripts.length) { console.error('未找到内联 <script>'); process.exit(1); }
-const code = scripts.join('\n') + '\n;globalThis.__api = { state, classify, applyAndRender, majorTags, COLUMNS, cityOf, JIANGSU_REGIONS };';
+const code = scripts.join('\n') + '\n;globalThis.__api = { state, classify, applyAndRender, majorTags, COLUMNS, cityOf, JIANGSU_REGIONS, provinceOf, PROVINCES, examTypeOptions };';
 
 const embeddedMatch = html.match(/<script id="embedded-data" type="application\/json">([\s\S]*?)<\/script>/i);
 const embeddedRaw = embeddedMatch ? embeddedMatch[1].trim() : '';
@@ -165,6 +165,25 @@ const okFetch = async () => ({ ok: true, status: 200, text: async () => dataJson
     applyAndRender();
     return [n > 0, allWuxi];
   })(), [true, true]);
+
+  /* ---- 考试类型 / 省份（为"国考 + 省考"双数据源准备）---- */
+  const { provinceOf, examTypeOptions } = api;
+  check('provinceOf：带省前缀 / 不带前缀的江苏地点都归到江苏',
+    [provinceOf('江苏省南京市'), provinceOf('宜兴市'), provinceOf('南京市江北新区')],
+    ['江苏', '江苏', '江苏']);
+  check('provinceOf：外省与直辖市',
+    [provinceOf('广东省深圳市'), provinceOf('北京市'), provinceOf('')],
+    ['广东', '北京', '其他']);
+  check('examTypeOptions 从数据动态生成', examTypeOptions(), ['国考', '江苏省考']);
+  check('考试类型筛选生效（示例夹具里国考 3 条）', (() => {
+    state.filters.考试类型 = ['国考'];
+    applyAndRender();
+    const n = state.filtered.length;
+    const allGk = state.filtered.every(j => String(j['考试类型']).includes('国考'));
+    state.filters.考试类型 = [];
+    applyAndRender();
+    return [n, allGk];
+  })(), [3, true]);
 }
 
 /* ============================ 阶段 2：data.json 读不到（双击打开） ============================ */

@@ -217,6 +217,16 @@
     </div>
     <div class="bd" id="filterBody">
 
+      <div class="filter-group" data-group="考试类型">
+        <div class="t">考试类型 <span class="hint">（国考 / 江苏省考；选项随数据自动出现）</span></div>
+        <div class="chips" id="gExam"></div>
+      </div>
+
+      <div class="filter-group" data-group="省份">
+        <div class="t">省份 <span class="hint">（国考岗位分布全国；江苏的区县会自动归到江苏）</span></div>
+        <div class="chips" id="gProv"></div>
+      </div>
+
       <div class="filter-group" data-group="城市">
         <div class="t">城市 <span class="hint">（江苏设区市；区县/县级市自动归到所属市）</span></div>
         <div class="chips" id="gCity"></div>
@@ -383,6 +393,47 @@ function cityOf(place) {
 // 专业目录归属标签（与 scraper.py 保持一致）
 const MAJOR_TAGS = ['生物科学','生物科学类','基础理学类','教育类','不限专业','相近专业'];
 
+// 省级行政区（用于国考岗位的"省份"筛选；国考岗位分布全国）
+const PROVINCES = ['北京','天津','河北','山西','内蒙古','辽宁','吉林','黑龙江','上海','江苏','浙江',
+  '安徽','福建','江西','山东','河南','湖北','湖南','广东','广西','海南','重庆','四川','贵州','云南',
+  '西藏','陕西','甘肃','青海','宁夏','新疆'];
+
+/** 把"工作地点"归到省级行政区：江苏省南京市→江苏、宜兴市→江苏（走区县映射）、广东省深圳市→广东 */
+function provinceOf(place) {
+  const p = String(place || '').trim();
+  if (!p) return '其他';
+  for (const prov of PROVINCES) {
+    if (p.includes(prov)) return prov;
+  }
+  if (cityOf(p) !== '其他') return '江苏';   // 江苏的区县/县级市常不带"江苏"前缀
+  return '其他';
+}
+
+/* ---- 筛选选项：从当前数据动态生成（国考数据一进来就自动出现对应选项）---- */
+
+function examTypeOptions() {
+  const seen = [];
+  state.jobs.forEach(j => {
+    const t = f(j, '考试类型');
+    if (t && !seen.includes(t)) seen.push(t);
+  });
+  // 国考排最前，其余按名称
+  return seen.sort((a, b) => (b.includes('国考') ? 1 : 0) - (a.includes('国考') ? 1 : 0) || a.localeCompare(b, 'zh'));
+}
+
+function provinceOptions() {
+  if (!state.jobs.length) return [];
+  const present = new Set(state.jobs.map(j => provinceOf(f(j, '工作地点'))));
+  return PROVINCES.filter(p => present.has(p)).concat(present.has('其他') ? ['其他'] : []);
+}
+
+function cityOptions() {
+  if (!state.jobs.length) return Object.keys(JIANGSU_REGIONS).concat(['省级机关', '其他']);
+  const present = new Set(state.jobs.map(j => cityOf(f(j, '工作地点'))));
+  return Object.keys(JIANGSU_REGIONS).filter(c => present.has(c))
+    .concat(['省级机关', '其他'].filter(c => present.has(c)));
+}
+
 // 表格 / CSV 输出字段（顺序与需求一致）
 const COLUMNS = ['考试类型','年度','职位代码','招录机关','用人司局/单位','职位名称','招录人数','工作地点',
   '学历要求','学位要求','专业要求原文','专业目录归属','政治面貌','基层工作最低年限','身份要求','户籍/生源要求',
@@ -396,6 +447,8 @@ const state = {
   filtered: [],        // 当前筛选结果
   meta: {},            // data.json 中的 meta
   filters: {           // 各筛选组的已选项（空数组 = 该组不限制）
+    考试类型: [],       // 国考 / 江苏省考（选项从数据动态生成；空=都看）
+    省份: [],           // 国考岗位分布全国，用省份收窄（江苏的区县会归到江苏）
     地区: ['江苏'],     // 默认勾选江苏
     城市: [],           // 默认不限制城市（江苏表里工作地点是区县/县级市，用 cityOf() 归到设区市）
     学历: ['本科'],
@@ -581,6 +634,15 @@ function _classify(job){
 function passFilters(job){
   const F = state.filters;
 
+  // 4.0 考试类型（国考 / 江苏省考 / 市级省考…）
+  if (F.考试类型.length) {
+    const t = f(job, '考试类型');
+    if (!F.考试类型.some(x => t.includes(x))) return false;
+  }
+
+  // 4.0b 省份（国考岗位分布全国；江苏的区县不带省前缀也能归到江苏）
+  if (F.省份.length && !F.省份.includes(provinceOf(f(job, '工作地点')))) return false;
+
   // 4.1 地区
   if (F.地区.length && !isJiangsu(job)) return false;
 
@@ -648,7 +710,9 @@ function passFilters(job){
  * 5. 筛选控件渲染
  * ------------------------------------------------------------------ */
 const FILTER_DEFS = [
-  { key:'城市', el:'gCity',      options: Object.keys(JIANGSU_REGIONS).concat(['省级机关','其他']) },
+  { key:'考试类型', el:'gExam',  options: () => examTypeOptions() },
+  { key:'省份',     el:'gProv',  options: () => provinceOptions() },
+  { key:'城市',     el:'gCity',  options: () => cityOptions() },
   { key:'地区', el:'gLoc',       options:['江苏','其他地区'] },
   { key:'学历', el:'gEdu',       options:['本科','硕士研究生及以上','大专及以上'] },
   { key:'专业', el:'gMajor',     options:['生物科学','生物科学类','基础理学类','教育类','不限专业','相近专业'] },
@@ -679,8 +743,16 @@ function renderFilters(withCounts){
   const showCount = (withCounts !== false) && state.jobs.length > 0 && state.jobs.length <= 8000;
   FILTER_DEFS.forEach(def => {
     const box = document.getElementById(def.el);
+    if (!box) return;
+    // options 可以是数组，也可以是函数（用于"从当前数据动态生成选项"，
+    // 例如考试类型、省份、城市 —— 国考数据一进来就会自动出现对应选项）
+    const options = (typeof def.options === 'function') ? def.options() : def.options;
     box.innerHTML = '';
-    def.options.forEach(opt => {
+    if (!options.length) {
+      box.innerHTML = '<span style="font-size:12px;color:#9ca3af">（当前数据里没有可选项）</span>';
+      return;
+    }
+    options.forEach(opt => {
       const on = state.filters[def.key].includes(opt);
       const chip = document.createElement('label');
       chip.className = 'chip' + (on ? ' on' : '');
@@ -1102,6 +1174,7 @@ document.getElementById('btnCsv').onclick = () => {
  * ------------------------------------------------------------------ */
 document.getElementById('btnReset').onclick = () => {
   state.filters.地区 = ['江苏']; state.filters.城市 = []; state.filters.学历 = ['本科'];
+  state.filters.考试类型 = []; state.filters.省份 = [];
   state.filters.专业 = ['生物科学','生物科学类','基础理学类','教育类','不限专业'];
   state.filters.身份 = []; state.filters.政治 = []; state.filters.基层 = []; state.filters.其他 = []; state.filters.关键词 = [];
   document.getElementById('kwInput').value = '';

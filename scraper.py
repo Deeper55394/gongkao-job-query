@@ -135,12 +135,15 @@ SOURCES: List[Source] = [
         year=None,                             # 从页面标题/附件名中自动识别年度
         entry_pages=[
             # 实测：bm.scs.gov.cn 的 443 端口拒绝连接，80 端口可用；kl2025/kl2024 已下线(404)
+            # ⚠ 国考专题站目前是纯 JS 应用（页面 2~4KB、0 个链接），静态爬虫拿不到数据；往年它是静态页。
+            #   tools/probe_new_cycle.py 会在发布当天自动判定它属于哪类，据此决定是否需要浏览器渲染。
             "http://bm.scs.gov.cn/kl2026/",
             "http://bm.scs.gov.cn/kl2027/",
+            "http://bm.scs.gov.cn/pp/gkweb/core/web/ui/business/download/gkdownloads.html",
             "https://www.scs.gov.cn/",
         ],
         link_keywords=["相关下载", "职位表", "招考简章", "考试录用", "公告", "下载"],
-        allowed_hosts=["bm.scs.gov.cn", "www.scs.gov.cn", "scs.gov.cn"],
+        allowed_hosts=["bm.scs.gov.cn", "www.scs.gov.cn", "scs.gov.cn", "dl.scs.gov.cn"],
         depth=2,
     ),
     # ---------------- 江苏省公务员考试 ----------------

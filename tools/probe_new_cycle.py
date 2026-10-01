@@ -111,29 +111,60 @@ def probe_jiangsu(sess: scraper.PoliteSession, want_year: int) -> List[Tuple[str
     return uniq
 
 
+def classify_page(sess: scraper.PoliteSession, url: str) -> Tuple[str, str]:
+    """
+    判断一个页面是"静态可抓"还是"JS 空壳"，返回 (类别, 说明)。
+
+    为什么要这个：国考专题站已改成纯 JS 应用（页面只有 2~4KB、0 个链接），
+    静态爬虫拿不到；而往年它是静态页。发布当天只要知道它属于哪类，
+    就能立刻决定"零依赖直接抓"还是"必须上浏览器渲染（Playwright）"。
+    """
+    html = sess.get_text(url)
+    if not html:
+        return "error", "打不开"
+    page_title = scraper.extract_page_title(html)
+    links = scraper.extract_links(html, url)
+    file_links = []
+    for abs_url, title in links:
+        if re.search(r"\.(xlsx?|xlsm|zip|pdf|docx?)(\?|$)", abs_url, re.I):
+            file_links.append((title, abs_url))
+        elif scraper.is_excel_attachment(abs_url, title, page_title):
+            file_links.append((title, abs_url))
+    if file_links:
+        return "static", "静态页，且有 %d 个文件链接（可零依赖直接抓）" % len(file_links)
+    if len(links) == 0:
+        return "js_shell", "JS 空壳（%d 字节、0 个链接 → 静态爬虫拿不到，需要浏览器渲染）" % len(html)
+    return "static_no_file", "静态页（%d 个链接）但暂未发现文件链接" % len(links)
+
+
 def probe_guokao(sess: scraper.PoliteSession, want_year: int) -> Tuple[List[Tuple[str, str, str]], List[str]]:
     """
-    国考：探测 kl{year} 专题页是否上线。
-    返回 (命中列表, 备注列表)。注意「相关下载」是 JS 动态列表，只能作为人工排查线索，
-    不能算作"发现新职位表"，否则会造成误报。
+    国考：探测 kl{year} 专题页与「相关下载」应用页，并判定它们的可抓性。
+    返回 (命中列表, 备注列表)。
     """
     hits: List[Tuple[str, str, str]] = []
     notes: List[str] = []
     url = GK_ENTRY.format(year=want_year)
-    html = sess.get_text(url)
-    if html:
-        title = scraper.extract_page_title(html)
-        if str(want_year) in title and "年度" in title:
-            hits.append(("国考专题页已上线：" + title, url, str(want_year)))
+    kind, why = classify_page(sess, url)
+    html = sess.get_text(url) if kind != "error" else None
+    title = scraper.extract_page_title(html) if html else ""
+    if kind == "error":
+        notes.append("国考 kl%d 专题页打不开（很可能还没上线）" % want_year)
+    elif str(want_year) in title and "年度" in title:
+        hits.append(("国考专题页已上线：" + title, url, str(want_year)))
+        if html:
             for abs_url, link_title in scraper.extract_links(html, url):
                 if scraper.is_excel_attachment(abs_url, link_title, title):
                     hits.append((link_title or abs_url, abs_url, str(want_year)))
-        else:
-            notes.append("国考 kl%d 专题页返回标题为「%s」（尚未换成本年度）" % (want_year, title[:40] or "空"))
+        notes.append("国考 kl%d 专题页：%s" % (want_year, why))
     else:
-        notes.append("国考 kl%d 专题页打不开" % want_year)
-    if sess.get_text(GK_DOWNLOADS):
-        notes.append("国考「相关下载」应用页可访问（列表是 JS 动态加载，需人工在浏览器查看）")
+        notes.append("国考 kl%d 专题页存在但标题是「%s」（尚未换成本年度）；%s"
+                     % (want_year, title[:40] or "空", why))
+
+    dk, dw = classify_page(sess, GK_DOWNLOADS)
+    notes.append("国考「相关下载」应用页：%s" % dw)
+    if dk == "static":
+        hits.append(("国考「相关下载」页是静态页，可直接解析", GK_DOWNLOADS, str(want_year)))
     return hits, notes
 
 
